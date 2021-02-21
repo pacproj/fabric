@@ -26,11 +26,14 @@ import (
 type Height struct {
 	BlockNum uint64
 	TxNum    uint64
+	//the true key means that the value is locked due to changes
+	//are making by a private atomic commit
+	PACparticipationFlag bool
 }
 
 // NewHeight constructs a new instance of Height
 func NewHeight(blockNum, txNum uint64) *Height {
-	return &Height{blockNum, txNum}
+	return &Height{blockNum, txNum, false}
 }
 
 // NewHeightFromBytes constructs a new instance of Height from serialized bytes
