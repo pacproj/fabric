@@ -416,13 +416,13 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 				return
 			}
 			logger.Debugf("config transaction received for chain %s", channel)
-		} else if common.HeaderType(chdr.Type) == common.HeaderType_PREPARE_TRANSACTION {
+		} else if common.HeaderType(chdr.Type) == common.HeaderType_PAC_PREPARE_TRANSACTION {
 			txType := common.HeaderType(chdr.Type)
 			logger.Debugf("txType=%s", txType)
 			txID = chdr.TxId
 
 			//Below is getiing envelope of PrepareTx (which is included in Envelope.Payload.Data of the transaction)
-			if ptenv, err := GetPrepareTxEnvelopeFromPayload(payload.Data); err != nil {
+			if ptenv, err := GetPACTxEnvelopeFromPayload(payload.Data); err != nil {
 				logger.Warningf("Error getting PrepareTx envelope from block: %+v", err)
 				results <- &blockValidationResult{
 					tIdx:           tIdx,
@@ -492,10 +492,10 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 	}
 }
 
-func GetPrepareTxEnvelopeFromPayload(data []byte) (*common.PrepareTxEnvelope, error) {
-	// PrepareTxPayload always begins with an PrepareTxEnvelope
+func GetPACTxEnvelopeFromPayload(data []byte) (*common.PACTxEnvelope, error) {
+	// PrepareTxPayload always begins with an PACTxEnvelope
 	var err error
-	ptenv := &common.PrepareTxEnvelope{}
+	ptenv := &common.PACTxEnvelope{}
 	if err = proto.Unmarshal(data, ptenv); err != nil {
 		return nil, errors.Wrap(err, "error unmarshaling Envelope")
 	}

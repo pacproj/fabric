@@ -17,6 +17,7 @@ limitations under the License.
 package version
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/hyperledger/fabric/common/ledger/util"
@@ -33,6 +34,8 @@ type Height struct {
 
 // NewHeight constructs a new instance of Height
 func NewHeight(blockNum, txNum uint64) *Height {
+	err1 := errors.New("NewHeight()")
+	fmt.Printf("%s", err1.Error())
 	return &Height{blockNum, txNum, false}
 }
 

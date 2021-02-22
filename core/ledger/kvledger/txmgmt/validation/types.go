@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package validation
 
 import (
+	"fmt"
+
 	"github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/core/ledger/internal/version"
@@ -87,6 +89,9 @@ func (u *publicAndHashUpdates) applyWriteSet(
 	db *privacyenabledstate.DB,
 	containsPostOrderWrites bool,
 ) error {
+	errTest := errors.New("program in the aplyWriteSet() function")
+	fmt.Printf("test: %s", errTest.Error())
+
 	u.publicUpdates.ContainsPostOrderWrites =
 		u.publicUpdates.ContainsPostOrderWrites || containsPostOrderWrites
 	txops, err := prepareTxOps(txRWSet, u, db)
@@ -98,13 +103,26 @@ func (u *publicAndHashUpdates) applyWriteSet(
 		if compositeKey.coll == "" {
 			ns, key := compositeKey.ns, compositeKey.key
 
-			//check if a key taking part in private atomic commit
-			keyHeight, err := db.GetVersion(ns, key)
-			if err != nil {
-				return err
-			}
-			if keyHeight.PACparticipationFlag == true {
-				return errors.New("PACparticipationFlag = true")
+			//check if a user-chaincode key taking part in private atomic commit
+			if ns != "" && ns != "lscc" && ns != "qscc" && ns != "cscc" && ns != "_lifecycle" {
+				verValue := u.publicUpdates.Get(ns, key)
+				if verValue != nil {
+					logger.Warningf("before checking PACparticipationFlag")
+					if verValue.Version.PACparticipationFlag == true {
+						logger.Warningf("PACparticipationFlag = true")
+						return errors.New("PACparticipationFlag = true")
+					}
+					logger.Warningf("after checking PACparticipationFlag")
+				}
+				logger.Warningf("verValue = nil")
+				/*keyHeight, err := db.GetVersion(ns, key)
+				if err != nil {
+					fmt.Printf("error during getting version: %s", err.Error())
+					return err
+				}
+				if keyHeight.PACparticipationFlag == true {
+					return errors.New("PACparticipationFlag = true")
+				}*/
 			}
 
 			if keyops.isDelete() {
