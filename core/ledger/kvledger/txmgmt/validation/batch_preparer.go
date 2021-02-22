@@ -9,7 +9,6 @@ package validation
 import (
 	"bytes"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
 	"github.com/hyperledger/fabric-protos-go/peer"
@@ -185,17 +184,6 @@ func validatePvtdata(tx *transaction, pvtdata *ledger.TxPvtData) error {
 	return nil
 }
 
-//GetPACTxEnvelopeFromPayload ...
-func GetPACTxEnvelopeFromPayload(data []byte) (*common.PACTxEnvelope, error) {
-	// Payload with Header=HeaderType_PAC_PREPARE_TRANSACTION always begins with an PACTxEnvelope
-	var err error
-	pactxenv := &common.PACTxEnvelope{}
-	if err = proto.Unmarshal(data, pactxenv); err != nil {
-		return nil, errors.Wrap(err, "error unmarshaling PACTxEnvelope")
-	}
-	return pactxenv, nil
-}
-
 // preprocessProtoBlock parses the proto instance of block into 'Block' structure.
 // The returned 'Block' structure contains only transactions that are endorser transactions and are not already marked as invalid
 func preprocessProtoBlock(postOrderSimulatorProvider PostOrderSimulatorProvider,
@@ -240,7 +228,7 @@ func preprocessProtoBlock(postOrderSimulatorProvider PostOrderSimulatorProvider,
 			txType == common.HeaderType_PAC_DECIDE_TRANSACTION ||
 			txType == common.HeaderType_PAC_ABORT_TRANSACTION {
 			//extract actions from the Private Atomic Commit Transaction
-			if pactxenv, err := GetPACTxEnvelopeFromPayload(payload.Data); err != nil {
+			if pactxenv, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data); err != nil {
 				logger.Warningf("Error getting [%s] envelope from block: %+v", common.HeaderType(chdr.Type), err)
 				txsFilter.SetFlag(txIndex, peer.TxValidationCode_INVALID_OTHER_REASON)
 				continue

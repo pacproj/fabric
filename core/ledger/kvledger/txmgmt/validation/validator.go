@@ -158,7 +158,7 @@ BlockLoop:
 						logger.Debugf("[%s] was put to updatebatch", tx.headerType)
 						continue
 					} else {
-						//apply payload for the DECIDE_TRANSACTION
+						//apply payload for the PAC_DECIDE_TRANSACTION
 						logger.Debugf("[%s] payload applying in progress", tx.headerType)
 					}
 				}

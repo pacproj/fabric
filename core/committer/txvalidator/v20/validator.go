@@ -422,7 +422,7 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 			txID = chdr.TxId
 
 			//Below is getiing envelope of PrepareTx (which is included in Envelope.Payload.Data of the transaction)
-			if ptenv, err := GetPACTxEnvelopeFromPayload(payload.Data); err != nil {
+			if ptenv, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data); err != nil {
 				logger.Warningf("Error getting PrepareTx envelope from block: %+v", err)
 				results <- &blockValidationResult{
 					tIdx:           tIdx,
@@ -448,7 +448,7 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 				}
 				return
 			} else {
-				logger.Warningf("Unknown transaction type [%s] in block number [%d] transaction index [%d]",
+				logger.Warningf("Error in getting txEnvelope from payload for transaction type [%s] in block number [%d] transaction index [%d]",
 					common.HeaderType(chdr.Type), block.Header.Number, tIdx)
 				results <- &blockValidationResult{
 					tIdx:           tIdx,
@@ -457,6 +457,28 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 				return
 			}
 
+		} else if common.HeaderType(chdr.Type) == common.HeaderType_PAC_DECIDE_TRANSACTION {
+			txType := common.HeaderType(chdr.Type)
+			logger.Debugf("txType=%s", txType)
+
+			//TODO: validation is here
+			logger.Warningf("DecideTx Validation was OK")
+			results <- &blockValidationResult{
+				tIdx:           tIdx,
+				validationCode: peer.TxValidationCode_VALID,
+			}
+			return
+		} else if common.HeaderType(chdr.Type) == common.HeaderType_PAC_ABORT_TRANSACTION {
+			txType := common.HeaderType(chdr.Type)
+			logger.Debugf("txType=%s", txType)
+
+			//TODO: validation is here
+			logger.Warningf("AbortTx Validation was OK")
+			results <- &blockValidationResult{
+				tIdx:           tIdx,
+				validationCode: peer.TxValidationCode_VALID,
+			}
+			return
 		} else {
 			logger.Warningf("Unknown transaction type [%s] in block number [%d] transaction index [%d]",
 				common.HeaderType(chdr.Type), block.Header.Number, tIdx)
@@ -490,17 +512,6 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 		}
 		return
 	}
-}
-
-func GetPACTxEnvelopeFromPayload(data []byte) (*common.PACTxEnvelope, error) {
-	// PrepareTxPayload always begins with an PACTxEnvelope
-	var err error
-	ptenv := &common.PACTxEnvelope{}
-	if err = proto.Unmarshal(data, ptenv); err != nil {
-		return nil, errors.Wrap(err, "error unmarshaling Envelope")
-	}
-
-	return ptenv, nil
 }
 
 // CheckTxIdDupsLedger returns a vlockValidationResult enhanced with the respective
