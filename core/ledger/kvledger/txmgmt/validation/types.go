@@ -105,24 +105,18 @@ func (u *publicAndHashUpdates) applyWriteSet(
 
 			//check if a user-chaincode key taking part in private atomic commit
 			if ns != "" && ns != "lscc" && ns != "qscc" && ns != "cscc" && ns != "_lifecycle" {
-				verValue := u.publicUpdates.Get(ns, key)
-				if verValue != nil {
+				//verValue := u.publicUpdates.Get(ns, key)
+				verValue, err := db.GetState(ns, key)
+				if verValue != nil && err == nil {
 					logger.Warningf("before checking PACparticipationFlag")
 					if verValue.Version.PACparticipationFlag == true {
 						logger.Warningf("PACparticipationFlag = true")
 						return errors.New("PACparticipationFlag = true")
 					}
 					logger.Warningf("after checking PACparticipationFlag")
+				} else {
+					logger.Warningf("verValue = %+v and err = %+v", verValue, err)
 				}
-				logger.Warningf("verValue = nil")
-				/*keyHeight, err := db.GetVersion(ns, key)
-				if err != nil {
-					fmt.Printf("error during getting version: %s", err.Error())
-					return err
-				}
-				if keyHeight.PACparticipationFlag == true {
-					return errors.New("PACparticipationFlag = true")
-				}*/
 			}
 
 			if keyops.isDelete() {
