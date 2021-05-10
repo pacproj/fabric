@@ -95,6 +95,9 @@ func validateChannelHeader(cHdr *common.ChannelHeader) error {
 	case common.HeaderType_ENDORSER_TRANSACTION:
 	case common.HeaderType_CONFIG_UPDATE:
 	case common.HeaderType_CONFIG:
+	case common.HeaderType_PAC_PREPARE_TRANSACTION:
+	case common.HeaderType_PAC_DECIDE_TRANSACTION:
+	case common.HeaderType_PAC_ABORT_TRANSACTION:
 	default:
 		return errors.Errorf("invalid header type %s", common.HeaderType(cHdr.Type))
 	}
@@ -300,14 +303,12 @@ func ValidateTransaction(e *common.Envelope, cryptoProvider bccsp.BCCSP) (*commo
 
 		if common.HeaderType(chdr.Type) != common.HeaderType_ENDORSER_TRANSACTION {
 			//Getting data from payload.Data
-			if pactxenv, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data); err != nil {
+			pactxenv, pactxpayload, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data)
+			if err != nil {
 				putilsLogger.Warningf("Error getting [%s] envelope from block: %+v", common.HeaderType(chdr.Type), err)
 				return payload, pb.TxValidationCode_INVALID_OTHER_REASON
-			} else if pactxenv != nil {
-				pactxpayload, err := protoutil.UnmarshalPayload(pactxenv.Payload)
-				if err != nil {
-					putilsLogger.Warningf("Error getting [%s] payload from PrepareTx envelope: %+v", common.HeaderType(chdr.Type), err)
-				}
+			}
+			if pactxenv != nil {
 				err = validateEndorserTransaction(pactxpayload.Data, payload.Header)
 				putilsLogger.Debugf("ValidateTransactionEnvelope returns err %s", err)
 

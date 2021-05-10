@@ -265,14 +265,18 @@ func getRandomNonce() ([]byte, error) {
 }
 
 //GetPACTxEnvelopeFromPayload gets PACTxEnvelope from the Pyload.Data field
-func GetPACTxEnvelopeFromPayload(data []byte) (*cb.PACTxEnvelope, error) {
-	// Payload.Data field for HeaderType_PAC_PREPARE_TRANSACTION
-	// or HeaderType_PAC_DECIDE_TRANSACTION or HeaderType_PAC_ABORT_TRANSACTION
-	//always begins with an PACTxEnvelope
+func GetPACTxEnvelopeFromPayload(data []byte) (*cb.PACTxEnvelope, *cb.Payload, error) {
+	// Payload.Data field always fills with an PACTxEnvelope
+	// for HeaderType_PAC_PREPARE_TRANSACTION or HeaderType_PAC_DECIDE_TRANSACTION
+	// or HeaderType_PAC_ABORT_TRANSACTION
 	var err error
 	pactxenv := &cb.PACTxEnvelope{}
 	if err = proto.Unmarshal(data, pactxenv); err != nil {
-		return nil, errors.Wrap(err, "error unmarshaling PACTxEnvelope")
+		return nil, nil, errors.Wrap(err, "error unmarshaling PACTxEnvelope")
 	}
-	return pactxenv, nil
+	pld := &cb.Payload{}
+	if err = proto.Unmarshal(pactxenv.Payload, pld); err != nil {
+		return nil, nil, errors.Wrap(err, "error unmarshaling PACTxEnvelope.Payload")
+	}
+	return pactxenv, pld, nil
 }

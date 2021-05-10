@@ -8,6 +8,8 @@ package txvalidator
 
 import (
 	"context"
+	"io/ioutil"
+	"os"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -422,7 +424,7 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 			txID = chdr.TxId
 
 			//Below is getiing envelope of PrepareTx (which is included in Envelope.Payload.Data of the transaction)
-			if ptenv, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data); err != nil {
+			if ptenv, payload, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data); err != nil {
 				logger.Warningf("Error getting PrepareTx envelope from block: %+v", err)
 				results <- &blockValidationResult{
 					tIdx:           tIdx,
@@ -430,17 +432,66 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 				}
 				return
 			} else if ptenv != nil {
-				//TODO: Checking duplicate transactions. Implementation from endorsmant block is below:
+				//Checking duplicate transactions. Implementation from endorsmant block is below:
+				//Dispatcher validations like in Endorment validation
 
-				/*erroneousResultEntry := v.checkTxIdDupsLedger(tIdx, chdr, v.LedgerResources)
+				// Check duplicate transactions
+				erroneousResultEntry := v.checkTxIdDupsLedger(tIdx, chdr, v.LedgerResources)
 				if erroneousResultEntry != nil {
-				  results <- erroneousResultEntry
-				  return
-				}*/
+					results <- erroneousResultEntry
+					return
+				}
 
-				//TODO: add some Dispatcher validations (like in Endorment validation, I suppose)
+				//TODO: change this awful repeating code (in DecideTx, AbortTx parts this code is the same)
+				// Validate tx with plugins
+				logger.Debug("Validating transaction with plugins")
+				_, err := v.Dispatcher.Dispatch(tIdx, payload, d, block)
+				if err != nil {
+					logger.Errorf("Dispatch for transaction txId = %s returned error: %s", txID, err)
+					switch err.(type) {
+					case *commonerrors.VSCCExecutionFailureError:
+						results <- &blockValidationResult{
+							tIdx: tIdx,
+							err:  err,
+						}
+						return
+					case *commonerrors.VSCCInfoLookupFailureError:
+						results <- &blockValidationResult{
+							tIdx: tIdx,
+							err:  err,
+						}
+						return
+					default:
+					}
+				}
+
 				//TODO: доделать сравнение хэшей PrepareTx с хэшами из transient store.
 				//		решено отложить это до запуска рабочего прототипа. См. вариант реализации в телеграм.
+
+				//printing TxId.json file data
+				pdp := "/etc/hyperledger/fabric/pacdata/"
+				cn := chdr.ChannelId
+				dlFileName := "pac" + txID + ".json"
+				f, err := os.Create(pdp + cn + "/" + dlFileName)
+				if err != nil {
+					results <- &blockValidationResult{
+						tIdx: tIdx,
+						err:  err,
+					}
+					return
+				}
+				logger.Debugf("file [%s] successfully created", f)
+				defer f.Close()
+				logger.Debugf("getting data from file %s...\nData:\n", dlFileName)
+				data, err := ioutil.ReadFile(pdp + cn + "/" + dlFileName)
+				if err != nil {
+					results <- &blockValidationResult{
+						tIdx: tIdx,
+						err:  err,
+					}
+					return
+				}
+				logger.Debugf("%s", data)
 				logger.Warningf("PrepareTx Validation was OK")
 				results <- &blockValidationResult{
 					tIdx:           tIdx,
@@ -461,6 +512,74 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 			txType := common.HeaderType(chdr.Type)
 			logger.Debugf("txType=%s", txType)
 
+			//TODO: change this awful repeating code (in AbortTx part code is the same)
+			ptenv, payload, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data)
+			if err != nil {
+				logger.Warningf("Error getting PrepareTx envelope from block: %+v", err)
+				results <- &blockValidationResult{
+					tIdx:           tIdx,
+					validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
+				}
+				return
+			}
+			if ptenv != nil {
+				// Validate tx with plugins
+				logger.Debug("Validating transaction with plugins")
+				_, err := v.Dispatcher.Dispatch(tIdx, payload, d, block)
+				if err != nil {
+					logger.Errorf("Dispatch for transaction txId = %s returned error: %s", txID, err)
+					switch err.(type) {
+					case *commonerrors.VSCCExecutionFailureError:
+						results <- &blockValidationResult{
+							tIdx: tIdx,
+							err:  err,
+						}
+						return
+					case *commonerrors.VSCCInfoLookupFailureError:
+						results <- &blockValidationResult{
+							tIdx: tIdx,
+							err:  err,
+						}
+						return
+					default:
+					}
+				}
+			} else {
+				logger.Warningf("Error in getting txEnvelope from payload for transaction type [%s] in block number [%d] transaction index [%d]",
+					common.HeaderType(chdr.Type), block.Header.Number, tIdx)
+				results <- &blockValidationResult{
+					tIdx:           tIdx,
+					validationCode: peer.TxValidationCode_UNKNOWN_TX_TYPE,
+				}
+				return
+			}
+
+			//TODO delete this awful repeating code
+			//printing TxId.json file data
+			pdp := "/etc/hyperledger/fabric/pacdata/"
+			cn := chdr.ChannelId
+			dlFileName := "pac" + txID + ".json"
+			f, err := os.Create(pdp + cn + "/" + dlFileName)
+			if err != nil {
+				results <- &blockValidationResult{
+					tIdx: tIdx,
+					err:  err,
+				}
+				return
+			}
+			logger.Debugf("file [%s] successfully created", f)
+			defer f.Close()
+			logger.Debugf("getting data from file %s...\nData:\n", dlFileName)
+			data, err := ioutil.ReadFile(pdp + cn + "/" + dlFileName)
+			if err != nil {
+				results <- &blockValidationResult{
+					tIdx: tIdx,
+					err:  err,
+				}
+				return
+			}
+			logger.Debugf("%s", data)
+
 			//TODO: validation is here
 			logger.Warningf("DecideTx Validation was OK")
 			results <- &blockValidationResult{
@@ -471,6 +590,73 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 		} else if common.HeaderType(chdr.Type) == common.HeaderType_PAC_ABORT_TRANSACTION {
 			txType := common.HeaderType(chdr.Type)
 			logger.Debugf("txType=%s", txType)
+
+			//TODO: change this awful repeating code (in AbortTx part code is the same)
+			ptenv, payload, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data)
+			if err != nil {
+				logger.Warningf("Error getting PrepareTx envelope from block: %+v", err)
+				results <- &blockValidationResult{
+					tIdx:           tIdx,
+					validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
+				}
+				return
+			}
+			if ptenv != nil {
+				// Validate tx with plugins
+				logger.Debug("Validating transaction with plugins")
+				_, err := v.Dispatcher.Dispatch(tIdx, payload, d, block)
+				if err != nil {
+					logger.Errorf("Dispatch for transaction txId = %s returned error: %s", txID, err)
+					switch err.(type) {
+					case *commonerrors.VSCCExecutionFailureError:
+						results <- &blockValidationResult{
+							tIdx: tIdx,
+							err:  err,
+						}
+						return
+					case *commonerrors.VSCCInfoLookupFailureError:
+						results <- &blockValidationResult{
+							tIdx: tIdx,
+							err:  err,
+						}
+						return
+					default:
+					}
+				}
+			} else {
+				logger.Warningf("Error in getting txEnvelope from payload for transaction type [%s] in block number [%d] transaction index [%d]",
+					common.HeaderType(chdr.Type), block.Header.Number, tIdx)
+				results <- &blockValidationResult{
+					tIdx:           tIdx,
+					validationCode: peer.TxValidationCode_UNKNOWN_TX_TYPE,
+				}
+				return
+			}
+			//TODO delete this awful repeating code
+			//printing TxId.json file data
+			pdp := "/etc/hyperledger/fabric/pacdata/"
+			cn := chdr.ChannelId
+			dlFileName := "pac" + txID + ".json"
+			f, err := os.Create(pdp + cn + "/" + dlFileName)
+			if err != nil {
+				results <- &blockValidationResult{
+					tIdx: tIdx,
+					err:  err,
+				}
+				return
+			}
+			logger.Debugf("file [%s] successfully created", f)
+			defer f.Close()
+			logger.Debugf("getting data from file %s...\nData:\n", dlFileName)
+			data, err := ioutil.ReadFile(pdp + cn + "/" + dlFileName)
+			if err != nil {
+				results <- &blockValidationResult{
+					tIdx: tIdx,
+					err:  err,
+				}
+				return
+			}
+			logger.Debugf("%s", data)
 
 			//TODO: validation is here
 			logger.Warningf("AbortTx Validation was OK")
