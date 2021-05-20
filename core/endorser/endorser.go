@@ -675,11 +675,11 @@ func saveDependencyList(ccpp *pb.ChaincodeProposalPayload, cn string, tid string
 		return err
 	}
 	endorserLogger.Debugf("file [%s] successfully created", f)
-	defer f.Close()
 	_, err = f.Write(m)
 	if err != nil {
 		return err
 	}
+	f.Close()
 	endorserLogger.Debugf("pac data was successfully written. Printing...")
 	savedData, err := ioutil.ReadFile(pdp + cn + "/" + dlFileName)
 	if err != nil {

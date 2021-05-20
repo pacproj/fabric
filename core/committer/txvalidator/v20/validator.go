@@ -9,7 +9,6 @@ package txvalidator
 import (
 	"context"
 	"io/ioutil"
-	"os"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -420,7 +419,8 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 			logger.Debugf("config transaction received for chain %s", channel)
 		} else if common.HeaderType(chdr.Type) == common.HeaderType_PAC_PREPARE_TRANSACTION {
 			txType := common.HeaderType(chdr.Type)
-			logger.Debugf("txType=%s", txType)
+			logger.Debugf("PREPARE_TRANSACTION condition")
+			logger.Debugf("txType = %s", txType)
 			txID = chdr.TxId
 
 			//Below is getiing envelope of PrepareTx (which is included in Envelope.Payload.Data of the transaction)
@@ -472,16 +472,7 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 				pdp := "/etc/hyperledger/fabric/pacdata/"
 				cn := chdr.ChannelId
 				dlFileName := "pac" + txID + ".json"
-				f, err := os.Create(pdp + cn + "/" + dlFileName)
-				if err != nil {
-					results <- &blockValidationResult{
-						tIdx: tIdx,
-						err:  err,
-					}
-					return
-				}
-				logger.Debugf("file [%s] successfully created", f)
-				defer f.Close()
+
 				logger.Debugf("getting data from file %s...\nData:\n", dlFileName)
 				data, err := ioutil.ReadFile(pdp + cn + "/" + dlFileName)
 				if err != nil {
@@ -510,6 +501,7 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 
 		} else if common.HeaderType(chdr.Type) == common.HeaderType_PAC_DECIDE_TRANSACTION {
 			txType := common.HeaderType(chdr.Type)
+			txID = chdr.TxId
 			logger.Debugf("txType=%s", txType)
 
 			//TODO: change this awful repeating code (in AbortTx part code is the same)
@@ -559,16 +551,6 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 			pdp := "/etc/hyperledger/fabric/pacdata/"
 			cn := chdr.ChannelId
 			dlFileName := "pac" + txID + ".json"
-			f, err := os.Create(pdp + cn + "/" + dlFileName)
-			if err != nil {
-				results <- &blockValidationResult{
-					tIdx: tIdx,
-					err:  err,
-				}
-				return
-			}
-			logger.Debugf("file [%s] successfully created", f)
-			defer f.Close()
 			logger.Debugf("getting data from file %s...\nData:\n", dlFileName)
 			data, err := ioutil.ReadFile(pdp + cn + "/" + dlFileName)
 			if err != nil {
@@ -590,6 +572,7 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 		} else if common.HeaderType(chdr.Type) == common.HeaderType_PAC_ABORT_TRANSACTION {
 			txType := common.HeaderType(chdr.Type)
 			logger.Debugf("txType=%s", txType)
+			txID = chdr.TxId
 
 			//TODO: change this awful repeating code (in AbortTx part code is the same)
 			ptenv, payload, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data)
@@ -637,16 +620,6 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 			pdp := "/etc/hyperledger/fabric/pacdata/"
 			cn := chdr.ChannelId
 			dlFileName := "pac" + txID + ".json"
-			f, err := os.Create(pdp + cn + "/" + dlFileName)
-			if err != nil {
-				results <- &blockValidationResult{
-					tIdx: tIdx,
-					err:  err,
-				}
-				return
-			}
-			logger.Debugf("file [%s] successfully created", f)
-			defer f.Close()
 			logger.Debugf("getting data from file %s...\nData:\n", dlFileName)
 			data, err := ioutil.ReadFile(pdp + cn + "/" + dlFileName)
 			if err != nil {

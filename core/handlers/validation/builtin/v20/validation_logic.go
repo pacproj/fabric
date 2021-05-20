@@ -132,9 +132,25 @@ func (vscc *Validator) extractValidationArtifacts(
 
 	// validate the payload type
 	if common.HeaderType(chdr.Type) != common.HeaderType_ENDORSER_TRANSACTION {
-		logger.Errorf("Only Endorser Transactions are supported, provided type %d", chdr.Type)
-		err = fmt.Errorf("Only Endorser Transactions are supported, provided type %d", chdr.Type)
-		return nil, err
+		switch common.HeaderType(chdr.Type) {
+		case
+			common.HeaderType_PAC_PREPARE_TRANSACTION,
+			common.HeaderType_PAC_DECIDE_TRANSACTION,
+			common.HeaderType_PAC_ABORT_TRANSACTION:
+			ptenv, pactxpayload, err := protoutil.GetPACTxEnvelopeFromPayload(payl.Data)
+			if err != nil {
+				return nil, err
+			} else if ptenv == nil {
+				return nil, errors.New("PAC tx envelope is nil")
+			} else {
+				//continue processing with original endorser payload
+				payl = pactxpayload
+			}
+		default:
+			logger.Errorf("Only Endorser or PAC-type Transactions are supported, provided type %d", chdr.Type)
+			err = fmt.Errorf("Only Endorser or PAC-type Transactions are supported, provided type %d", chdr.Type)
+			return nil, err
+		}
 	}
 
 	// ...and the transaction...

@@ -116,10 +116,25 @@ func (v *dispatcherImpl) Dispatch(seq int, payload *common.Payload, envBytes []b
 	}
 
 	/* obtain the list of namespaces we're writing to */
-	respPayload, err := protoutil.GetActionFromEnvelope(envBytes)
-	if err != nil {
-		return peer.TxValidationCode_BAD_RESPONSE_PAYLOAD, errors.WithMessage(err, "GetActionFromEnvelope failed")
+	var respPayload = &peer.ChaincodeAction{}
+	switch chdr.Type {
+	case
+		int32(common.HeaderType_PAC_PREPARE_TRANSACTION),
+		int32(common.HeaderType_PAC_DECIDE_TRANSACTION),
+		int32(common.HeaderType_PAC_ABORT_TRANSACTION):
+		respPayload, err = protoutil.GetPACActionFromEnvelope(envBytes)
+		if err != nil {
+			return peer.TxValidationCode_BAD_RESPONSE_PAYLOAD, errors.WithMessage(err, "GetActionFromEnvelope failed")
+		}
+
+	default:
+		respPayload, err = protoutil.GetActionFromEnvelope(envBytes)
+		if err != nil {
+			return peer.TxValidationCode_BAD_RESPONSE_PAYLOAD, errors.WithMessage(err, "GetActionFromEnvelope failed")
+		}
+
 	}
+
 	txRWSet := &rwsetutil.TxRwSet{}
 	if err = txRWSet.FromProtoBytes(respPayload.Results); err != nil {
 		return peer.TxValidationCode_BAD_RWSET, errors.WithMessage(err, "txRWSet.FromProtoBytes failed")

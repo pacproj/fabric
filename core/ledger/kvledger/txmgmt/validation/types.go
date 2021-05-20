@@ -105,11 +105,11 @@ func (u *publicAndHashUpdates) applyWriteSet(
 
 			//check if a user-chaincode key taking part in private atomic commit
 			if ns != "" && ns != "lscc" && ns != "qscc" && ns != "cscc" && ns != "_lifecycle" {
-				//verValue := u.publicUpdates.Get(ns, key)
 				verValue, err := db.GetState(ns, key)
 				if verValue != nil && err == nil {
-					logger.Warningf("before checking PACparticipationFlag")
-					if verValue.Version.PACparticipationFlag == true {
+					logger.Debugf("verValue.PACparticipationFlag: [%t] verValue = [%s] / [%v]", verValue.Version.PACparticipationFlag, verValue, verValue)
+					logger.Debugf("before checking PACparticipationFlag")
+					if verValue.Version.PACparticipationFlag {
 						logger.Warningf("PACparticipationFlag = true")
 						return errors.New("PACparticipationFlag = true")
 					}
@@ -122,6 +122,7 @@ func (u *publicAndHashUpdates) applyWriteSet(
 			if keyops.isDelete() {
 				u.publicUpdates.Delete(ns, key, txHeight)
 			} else {
+				logger.Debugf("PutValAndMetadata calling... ")
 				u.publicUpdates.PutValAndMetadata(ns, key, keyops.value, keyops.metadata, txHeight)
 			}
 		} else {
