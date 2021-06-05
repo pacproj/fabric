@@ -14,6 +14,7 @@ import (
 
 // encodeValue encodes the value, version, and metadata
 func encodeValue(v *statedb.VersionedValue) ([]byte, error) {
+	logger.Debugf("VersionedValue: %s, Version: %s, PACFlag is: %t", v.Value, v.Version, v.Version.PACparticipationFlag)
 	return proto.Marshal(
 		&DBValue{
 			Version:  v.Version.ToBytes(),

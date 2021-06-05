@@ -126,6 +126,7 @@ BlockLoop:
 								continue BlockLoop
 							}
 							logger.Debugf("PAC_PREPARE_TX verValue PACparticipationFlag: [%t], verValue: [%s] / [%+v]", verValue.Version.PACparticipationFlag, verValue, verValue)
+							logger.Debugf("verValue.Version before changes: [%s]", verValue.Version)
 							//verValue := updates.publicUpdates.Get(ns, key)
 							if verValue.Version.PACparticipationFlag {
 								logger.Errorf("PAC-protocol error: PACparticipationFlag is already true for ns: [%s], key: [%s], value: [%s]. The transaction with id [%s] can't apply [%s]", ns, key, verValue.Value, tx.id, tx.headerType)
@@ -134,6 +135,7 @@ BlockLoop:
 							//locking WSet key
 							verValue.Version.PACparticipationFlag = true
 							updates.publicUpdates.PutValAndMetadata(ns, key, verValue.Value, verValue.Metadata, verValue.Version)
+							logger.Debugf("verValue.Version after changes: [%s]", verValue.Version)
 							logger.Debugf("VersionedValue.PACparticipationFlag for ns [%s] data [%s] was set to [%v] and put to updatebatch", ns, string(verValue.Value), verValue.Version.PACparticipationFlag)
 							logger.Debugf("batch.Updates[ns]: [%+v] / [%s] ", updates.publicUpdates.Updates[ns], updates.publicUpdates.Updates[ns])
 							continue BlockLoop

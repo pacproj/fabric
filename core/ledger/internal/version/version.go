@@ -17,7 +17,6 @@ limitations under the License.
 package version
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/hyperledger/fabric/common/ledger/util"
@@ -34,9 +33,12 @@ type Height struct {
 
 // NewHeight constructs a new instance of Height
 func NewHeight(blockNum, txNum uint64) *Height {
-	err1 := errors.New("NewHeight()")
-	fmt.Printf("%s", err1.Error())
 	return &Height{blockNum, txNum, false}
+}
+
+// NewHeightWithPACFlag constructs a new instance of Height with set PACparticipationFlag
+func NewHeightWithPACFlag(blockNum, txNum uint64, pacParticipationFlag bool) *Height {
+	return &Height{blockNum, txNum, pacParticipationFlag}
 }
 
 // NewHeightFromBytes constructs a new instance of Height from serialized bytes
@@ -49,13 +51,35 @@ func NewHeightFromBytes(b []byte) (*Height, int, error) {
 	if err != nil {
 		return nil, -1, err
 	}
-	return NewHeight(blockNum, txNum), n1 + n2, nil
+	//checking if the PACParticipationFlag is set in the end of serialized bytes
+	if string(b[n2:]) != "" {
+		//decode here last part of bytes and return the Height with the value of PACParticipationFlag
+		pacParticipationFlag, n3, err := util.DecodeOrderPreservingVarUint64(b[n1:])
+		if err != nil {
+			return nil, -1, err
+		}
+		if pacParticipationFlag == 1 {
+			return NewHeightWithPACFlag(blockNum, txNum, true), n1 + n2 + n3, nil
+		} else {
+			return NewHeightWithPACFlag(blockNum, txNum, false), n1 + n2 + n3, nil
+		}
+
+	} else {
+		//return height with PACParticipationFlag which is set to false by default
+		return NewHeight(blockNum, txNum), n1 + n2, nil
+	}
 }
 
 // ToBytes serializes the Height
 func (h *Height) ToBytes() []byte {
 	blockNumBytes := util.EncodeOrderPreservingVarUint64(h.BlockNum)
 	txNumBytes := util.EncodeOrderPreservingVarUint64(h.TxNum)
+
+	//add PACparticipation flag to serialized bytes (if it is true)
+	if h.PACparticipationFlag {
+		PACTrue := util.EncodeOrderPreservingVarUint64(1)
+		txNumBytes = append(txNumBytes, PACTrue...)
+	}
 	return append(blockNumBytes, txNumBytes...)
 }
 
@@ -82,7 +106,7 @@ func (h *Height) String() string {
 	if h == nil {
 		return "<nil>"
 	}
-	return fmt.Sprintf("{BlockNum: %d, TxNum: %d}", h.BlockNum, h.TxNum)
+	return fmt.Sprintf("{BlockNum: %d, TxNum: %d, PACParticipationFlag: %t}", h.BlockNum, h.TxNum, h.PACparticipationFlag)
 }
 
 // AreSame returns true if both the heights are either nil or equal
