@@ -20,7 +20,11 @@ import (
 	"fmt"
 
 	"github.com/hyperledger/fabric/common/ledger/util"
+	//TODO: remove this after successful debug
+	"github.com/hyperledger/fabric/common/flogging"
 )
+
+var logger = flogging.MustGetLogger("versionheight")
 
 // Height represents the height of a transaction in blockchain
 type Height struct {
@@ -52,12 +56,15 @@ func NewHeightFromBytes(b []byte) (*Height, int, error) {
 		return nil, -1, err
 	}
 	//checking if the PACParticipationFlag is set in the end of serialized bytes
-	if string(b[n2:]) != "" {
+	//we have to read remaining bytes after blockNum and txNum bytes (so, n1+n2)
+	if string(b[n1+n2:]) != "" {
+		logger.Debugf("in the condition to check PACParticipationFlag, b[n2:] is: [%s]\n", b[n2:])
 		//decode here last part of bytes and return the Height with the value of PACParticipationFlag
-		pacParticipationFlag, n3, err := util.DecodeOrderPreservingVarUint64(b[n1:])
+		pacParticipationFlag, n3, err := util.DecodeOrderPreservingVarUint64(b[n1+n2:])
 		if err != nil {
 			return nil, -1, err
 		}
+		logger.Debugf("pacParticipationFlag is: [%d]", pacParticipationFlag)
 		if pacParticipationFlag == 1 {
 			return NewHeightWithPACFlag(blockNum, txNum, true), n1 + n2 + n3, nil
 		} else {
@@ -76,10 +83,13 @@ func (h *Height) ToBytes() []byte {
 	txNumBytes := util.EncodeOrderPreservingVarUint64(h.TxNum)
 
 	//add PACparticipation flag to serialized bytes (if it is true)
+	logger.Debugf("before checking and the h.PACparticipationFlag is: [%t]", h.PACparticipationFlag)
 	if h.PACparticipationFlag {
+		logger.Debugf("in condition")
 		PACTrue := util.EncodeOrderPreservingVarUint64(1)
 		txNumBytes = append(txNumBytes, PACTrue...)
 	}
+	logger.Debugf("ToBytes() result: [%+v]", append(blockNumBytes, txNumBytes...))
 	return append(blockNumBytes, txNumBytes...)
 }
 

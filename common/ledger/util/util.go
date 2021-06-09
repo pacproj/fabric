@@ -21,8 +21,11 @@ import (
 	"fmt"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/pkg/errors"
 )
+
+var logger = flogging.MustGetLogger("util")
 
 // EncodeOrderPreservingVarUint64 returns a byte-representation for a uint64 number such that
 // all zero-bits starting bytes are trimmed in order to reduce the length of the array
@@ -48,6 +51,7 @@ func EncodeOrderPreservingVarUint64(number uint64) []byte {
 	encodedBytes := make([]byte, size+1)
 	encodedBytes[0] = sizeBytes[0]
 	copy(encodedBytes[1:], bytes[startingIndex:])
+	logger.Debugf("encoded bytes: [%+v]", encodedBytes)
 	return encodedBytes
 }
 
@@ -55,7 +59,7 @@ func EncodeOrderPreservingVarUint64(number uint64) []byte {
 // It returns the decoded number, the number of bytes that are consumed in the process, and an error if the input bytes are invalid.
 func DecodeOrderPreservingVarUint64(bytes []byte) (uint64, int, error) {
 	s, numBytes := proto.DecodeVarint(bytes)
-
+	logger.Debugf("bytes to decode: [%+v]", bytes)
 	switch {
 	case numBytes != 1:
 		return 0, 0, errors.Errorf("number of consumed bytes from DecodeVarint is invalid, expected 1, but got %d", numBytes)
@@ -69,6 +73,8 @@ func DecodeOrderPreservingVarUint64(bytes []byte) (uint64, int, error) {
 		decodedBytes := make([]byte, 8)
 		copy(decodedBytes[8-size:], bytes[1:size+1])
 		numBytesConsumed := size + 1
+		logger.Debugf("decodedBytes: [%+v]", decodedBytes)
+		logger.Debugf("binary.BigEndian.Uint64(decodedBytes): [%+v]", binary.BigEndian.Uint64(decodedBytes))
 		return binary.BigEndian.Uint64(decodedBytes), numBytesConsumed, nil
 	}
 }

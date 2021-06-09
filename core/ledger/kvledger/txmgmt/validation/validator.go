@@ -101,6 +101,7 @@ BlockLoop:
 
 		tx.validationCode = validationCode
 		if validationCode == peer.TxValidationCode_VALID {
+			decideTxApproved := false
 			logger.Debugf("Block [%d] Transaction index [%d] TxId [%s] marked as valid by state validator. ContainsPostOrderWrites [%t]", blk.num, tx.indexInBlock, tx.id, tx.containsPostOrderWrites)
 			if tx.headerType == common.HeaderType_PAC_PREPARE_TRANSACTION ||
 				tx.headerType == common.HeaderType_PAC_DECIDE_TRANSACTION ||
@@ -163,29 +164,31 @@ BlockLoop:
 								//go to the next transaction in the block
 								continue BlockLoop
 							}
-							//unlocking WSet key
-							verValue.Version.PACparticipationFlag = false
-							updates.publicUpdates.PutValAndMetadata(ns, key, verValue.Value, verValue.Metadata, verValue.Version)
-							logger.Debugf("VersionedValue.PACparticipationFlag for ns [%s] data [%s] was set to [%v]", ns, string(verValue.Value), verValue.Version.PACparticipationFlag)
-							logger.Debugf("batch.Updates[ns]: [%+v] / [%s] ", updates.publicUpdates.Updates[ns], updates.publicUpdates.Updates[ns])
+
+							//
+							if tx.headerType == common.HeaderType_PAC_ABORT_TRANSACTION {
+								//unlocking WSet key
+								verValue.Version.PACparticipationFlag = false
+								updates.publicUpdates.PutValAndMetadata(ns, key, verValue.Value, verValue.Metadata, verValue.Version)
+								logger.Debugf("[%s] was put to updatebatch", tx.headerType)
+								logger.Debugf("VersionedValue.PACparticipationFlag for ns [%s] data [%s] was set to [%v]", ns, string(verValue.Value), verValue.Version.PACparticipationFlag)
+								logger.Debugf("batch.Updates[ns]: [%+v] / [%s] ", updates.publicUpdates.Updates[ns], updates.publicUpdates.Updates[ns])
+								continue BlockLoop
+							} else {
+								decideTxApproved = true
+								logger.Debugf("[%s] payload applying in progress", tx.headerType)
+							}
 						} else {
 							//TODO: should we handle hashes of private data here?
 							logger.Errorf("PAC is unsupported hashes handling for now")
 							continue BlockLoop
 						}
 					}
-					if tx.headerType == common.HeaderType_PAC_ABORT_TRANSACTION {
-						logger.Debugf("[%s] was put to updatebatch", tx.headerType)
-						continue
-					} else {
-						//apply payload for the PAC_DECIDE_TRANSACTION
-						logger.Debugf("[%s] payload applying in progress", tx.headerType)
-					}
 				}
 			}
 
 			committingTxHeight := version.NewHeight(blk.num, uint64(tx.indexInBlock))
-			if err := updates.applyWriteSet(tx.rwset, committingTxHeight, v.db, tx.containsPostOrderWrites); err != nil {
+			if err := updates.applyWriteSet(tx.rwset, committingTxHeight, v.db, tx.containsPostOrderWrites, decideTxApproved); err != nil {
 				if err.Error() == "PACparticipationFlag = true" {
 					logger.Debugf("One of the keys of tx [%s] with id [%s] is locked until the end a private atomic commit.", tx.headerType, tx.id)
 					tx.validationCode = peer.TxValidationCode_RWSET_KEY_INVOLVED_IN_PAC

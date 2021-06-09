@@ -88,6 +88,7 @@ func (u *publicAndHashUpdates) applyWriteSet(
 	txHeight *version.Height,
 	db *privacyenabledstate.DB,
 	containsPostOrderWrites bool,
+	decideTxApproved bool,
 ) error {
 	errTest := errors.New("program in the aplyWriteSet() function")
 	fmt.Printf("test: %s", errTest.Error())
@@ -108,9 +109,9 @@ func (u *publicAndHashUpdates) applyWriteSet(
 				verValue, err := db.GetState(ns, key)
 				if verValue != nil && err == nil {
 					logger.Debugf("verValue.PACparticipationFlag: [%t] verValue = [%s] / [%v]", verValue.Version.PACparticipationFlag, verValue, verValue)
-					logger.Debugf("before checking PACparticipationFlag")
-					if verValue.Version.PACparticipationFlag {
-						logger.Warningf("PACparticipationFlag = true")
+					logger.Debugf("before checking PACparticipationFlag and decideTxApproved flags")
+					if verValue.Version.PACparticipationFlag && !decideTxApproved {
+						logger.Warningf("PACparticipationFlag = true -> Transaction skipping")
 						return errors.New("PACparticipationFlag = true")
 					}
 					logger.Warningf("after checking PACparticipationFlag")
