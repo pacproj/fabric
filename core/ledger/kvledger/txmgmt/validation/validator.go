@@ -126,15 +126,15 @@ BlockLoop:
 								logger.Errorf("Failed to get VersionedValue: [%+v], got: [%+s]", err, verValue)
 								continue BlockLoop
 							}
-							logger.Debugf("PAC_PREPARE_TX verValue PACparticipationFlag: [%t], verValue: [%s] / [%+v]", verValue.Version.PACparticipationFlag, verValue, verValue)
+							logger.Debugf("PAC_PREPARE_TX verValue PACparticipationFlag: [%d], verValue: [%s] / [%+v]", verValue.Version.PACparticipationFlag, verValue, verValue)
 							logger.Debugf("verValue.Version before changes: [%s]", verValue.Version)
 							//verValue := updates.publicUpdates.Get(ns, key)
-							if verValue.Version.PACparticipationFlag {
-								logger.Errorf("PAC-protocol error: PACparticipationFlag is already true for ns: [%s], key: [%s], value: [%s]. The transaction with id [%s] can't apply [%s]", ns, key, verValue.Value, tx.id, tx.headerType)
+							if verValue.Version.PACparticipationFlag != 0 {
+								logger.Errorf("PAC-protocol error: PACparticipationFlag is already not 0 for ns: [%s], key: [%s], value: [%s], version: [%s]. The transaction with id [%s] can't apply [%s]", ns, key, verValue.Value, verValue.Version, tx.id, tx.headerType)
 								continue BlockLoop
 							}
-							//locking WSet key
-							verValue.Version.PACparticipationFlag = true
+							//locking WSet key saving the block num to know when timeout was started
+							verValue.Version.PACparticipationFlag = blk.num
 							updates.publicUpdates.PutValAndMetadata(ns, key, verValue.Value, verValue.Metadata, verValue.Version)
 							logger.Debugf("verValue.Version after changes: [%s]", verValue.Version)
 							logger.Debugf("VersionedValue.PACparticipationFlag for ns [%s] data [%s] was set to [%v] and put to updatebatch", ns, string(verValue.Value), verValue.Version.PACparticipationFlag)
@@ -158,21 +158,16 @@ BlockLoop:
 								logger.Errorf("Failed to get VersionedValue: [%+v], got: [%+s]", err, verValue)
 								continue BlockLoop
 							}
-							logger.Debugf("PAC_DECIDE_TX, PAC_ABORT_TX verValue PACparticipationFlag: [%t] verValue: [%s] / [%+v]", verValue.Version.PACparticipationFlag, verValue, verValue)
-							if !verValue.Version.PACparticipationFlag {
+							logger.Debugf("PAC_DECIDE_TX, PAC_ABORT_TX verValue PACparticipationFlag: [%d] verValue: [%s] / [%+v]", verValue.Version.PACparticipationFlag, verValue, verValue)
+							if verValue.Version.PACparticipationFlag == 0 {
 								logger.Errorf("PAC-protocol error: The peer got the [%s], but didn't get the [PREPARE_TRANSACTION] before. The PACparticipationFlag is already false for ns: [%s], key: [%s], value: [%s]", tx.headerType, ns, key, string(verValue.Value))
 								//go to the next transaction in the block
 								continue BlockLoop
 							}
 
-							//
 							if tx.headerType == common.HeaderType_PAC_ABORT_TRANSACTION {
 								//unlocking WSet key
-								verValue.Version.PACparticipationFlag = false
-								updates.publicUpdates.PutValAndMetadata(ns, key, verValue.Value, verValue.Metadata, verValue.Version)
-								logger.Debugf("[%s] was put to updatebatch", tx.headerType)
-								logger.Debugf("VersionedValue.PACparticipationFlag for ns [%s] data [%s] was set to [%v]", ns, string(verValue.Value), verValue.Version.PACparticipationFlag)
-								logger.Debugf("batch.Updates[ns]: [%+v] / [%s] ", updates.publicUpdates.Updates[ns], updates.publicUpdates.Updates[ns])
+								updates.putUnlockedWSetKeyToBatch(verValue, ns, key)
 								continue BlockLoop
 							} else {
 								decideTxApproved = true
@@ -188,8 +183,8 @@ BlockLoop:
 			}
 
 			committingTxHeight := version.NewHeight(blk.num, uint64(tx.indexInBlock))
-			if err := updates.applyWriteSet(tx.rwset, committingTxHeight, v.db, tx.containsPostOrderWrites, decideTxApproved); err != nil {
-				if err.Error() == "PACparticipationFlag = true" {
+			if err := updates.applyWriteSet(tx.rwset, committingTxHeight, v.db, tx.containsPostOrderWrites, decideTxApproved, blk.num); err != nil {
+				if err.Error() == "PACparticipationFlag != 0" {
 					logger.Debugf("One of the keys of tx [%s] with id [%s] is locked until the end a private atomic commit.", tx.headerType, tx.id)
 					tx.validationCode = peer.TxValidationCode_RWSET_KEY_INVOLVED_IN_PAC
 					continue

@@ -136,7 +136,8 @@ func (d *DB) Commit(block *common.Block) error {
 				}
 			}
 
-		} else if common.HeaderType(chdr.Type) == common.HeaderType_PAC_DECIDE_TRANSACTION ||
+		} else if common.HeaderType(chdr.Type) == common.HeaderType_PAC_PREPARE_TRANSACTION ||
+			common.HeaderType(chdr.Type) == common.HeaderType_PAC_DECIDE_TRANSACTION ||
 			common.HeaderType(chdr.Type) == common.HeaderType_PAC_ABORT_TRANSACTION {
 			//TODO: decide, what should we need to save in history?
 			//it seems that we should not save PrepareTx payload in blockchain

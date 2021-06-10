@@ -14,8 +14,11 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/internal/version"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/pkg/errors"
 )
+
+var AtomicCommitTimeout uint64 = 10 //num of blocks
 
 // block is used to used to hold the information from its proto format to a structure
 // that is more suitable/friendly for validation
@@ -89,6 +92,7 @@ func (u *publicAndHashUpdates) applyWriteSet(
 	db *privacyenabledstate.DB,
 	containsPostOrderWrites bool,
 	decideTxApproved bool,
+	blockNum uint64,
 ) error {
 	errTest := errors.New("program in the aplyWriteSet() function")
 	fmt.Printf("test: %s", errTest.Error())
@@ -108,11 +112,17 @@ func (u *publicAndHashUpdates) applyWriteSet(
 			if ns != "" && ns != "lscc" && ns != "qscc" && ns != "cscc" && ns != "_lifecycle" {
 				verValue, err := db.GetState(ns, key)
 				if verValue != nil && err == nil {
-					logger.Debugf("verValue.PACparticipationFlag: [%t] verValue = [%s] / [%v]", verValue.Version.PACparticipationFlag, verValue, verValue)
-					logger.Debugf("before checking PACparticipationFlag and decideTxApproved flags")
-					if verValue.Version.PACparticipationFlag && !decideTxApproved {
-						logger.Warningf("PACparticipationFlag = true -> Transaction skipping")
-						return errors.New("PACparticipationFlag = true")
+					logger.Debugf("verValue.PACparticipationFlag: [%d] verValue = [%s] / [%v]", verValue.Version.PACparticipationFlag, verValue, verValue)
+					if verValue.Version.PACparticipationFlag != 0 {
+						logger.Debugf("before checking PACparticipationFlag and decideTxApproved flags")
+						if verValue.Version.PACparticipationFlag+AtomicCommitTimeout < blockNum {
+							logger.Warningf("Atomic commit timeout! Key [%s] was locked in block [%d], but now was got block [%d]", key, verValue.Version.PACparticipationFlag, blockNum)
+							//unlocking PACparticipationFlag and putting it to batch
+							u.putUnlockedWSetKeyToBatch(verValue, ns, key)
+						} else if verValue.Version.PACparticipationFlag != 0 && !decideTxApproved {
+							logger.Warningf("PACparticipationFlag != 0 -> Transaction skipping")
+							return errors.New("PACparticipationFlag != 0")
+						}
 					}
 					logger.Warningf("after checking PACparticipationFlag")
 				} else {
@@ -136,4 +146,13 @@ func (u *publicAndHashUpdates) applyWriteSet(
 		}
 	}
 	return nil
+}
+
+//putUnlockedWSetKeyToBatch unlocks PACparticipationFlag and puts given VersionedValue to the batch
+func (u *publicAndHashUpdates) putUnlockedWSetKeyToBatch(verValue *statedb.VersionedValue, ns string, key string) {
+	verValue.Version.PACparticipationFlag = 0
+	u.publicUpdates.PutValAndMetadata(ns, key, verValue.Value, verValue.Metadata, verValue.Version)
+	logger.Debugf("VersionedValue.PACparticipationFlag for ns [%s] data [%s] was set to [%v]", ns, string(verValue.Value), verValue.Version.PACparticipationFlag)
+	logger.Debugf("batch.Updates[ns]: [%+v] / [%s] ", u.publicUpdates.Updates[ns], u.publicUpdates.Updates[ns])
+	logger.Debugf("unlocked PACparticipationFlag for key [%s] successfully put to batch", key)
 }

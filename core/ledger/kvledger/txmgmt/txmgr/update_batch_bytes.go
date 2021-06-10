@@ -85,7 +85,7 @@ func genKVs(updates map[string]*statedb.VersionedValue) []*KVWrite {
 	for _, key := range keys {
 		val := updates[key]
 		if val.Version != nil {
-			logger.Debugf("val.Version.PACparticipationFlag is: [%t] val.Version is: [%s]", val.Version.PACparticipationFlag, val.Version)
+			logger.Debugf("val.Version.PACparticipationFlag is: [%d] val.Version is: [%s]", val.Version.PACparticipationFlag, val.Version)
 		}
 		kvWrites = append(
 			kvWrites,

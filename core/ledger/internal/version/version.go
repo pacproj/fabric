@@ -30,18 +30,18 @@ var logger = flogging.MustGetLogger("versionheight")
 type Height struct {
 	BlockNum uint64
 	TxNum    uint64
-	//the true key means that the value is locked due to changes
-	//are making by a private atomic commit
-	PACparticipationFlag bool
+	//the not zero key means that the value is locked due to
+	//changes are making by an atomic commit
+	PACparticipationFlag uint64
 }
 
 // NewHeight constructs a new instance of Height
 func NewHeight(blockNum, txNum uint64) *Height {
-	return &Height{blockNum, txNum, false}
+	return &Height{blockNum, txNum, 0}
 }
 
 // NewHeightWithPACFlag constructs a new instance of Height with set PACparticipationFlag
-func NewHeightWithPACFlag(blockNum, txNum uint64, pacParticipationFlag bool) *Height {
+func NewHeightWithPACFlag(blockNum, txNum uint64, pacParticipationFlag uint64) *Height {
 	return &Height{blockNum, txNum, pacParticipationFlag}
 }
 
@@ -65,10 +65,10 @@ func NewHeightFromBytes(b []byte) (*Height, int, error) {
 			return nil, -1, err
 		}
 		logger.Debugf("pacParticipationFlag is: [%d]", pacParticipationFlag)
-		if pacParticipationFlag == 1 {
-			return NewHeightWithPACFlag(blockNum, txNum, true), n1 + n2 + n3, nil
+		if pacParticipationFlag != 0 {
+			return NewHeightWithPACFlag(blockNum, txNum, pacParticipationFlag), n1 + n2 + n3, nil
 		} else {
-			return NewHeightWithPACFlag(blockNum, txNum, false), n1 + n2 + n3, nil
+			return NewHeightWithPACFlag(blockNum, txNum, pacParticipationFlag), n1 + n2 + n3, nil
 		}
 
 	} else {
@@ -84,10 +84,10 @@ func (h *Height) ToBytes() []byte {
 
 	//add PACparticipation flag to serialized bytes (if it is true)
 	logger.Debugf("before checking and the h.PACparticipationFlag is: [%t]", h.PACparticipationFlag)
-	if h.PACparticipationFlag {
+	if h.PACparticipationFlag != 0 {
 		logger.Debugf("in condition")
-		PACTrue := util.EncodeOrderPreservingVarUint64(1)
-		txNumBytes = append(txNumBytes, PACTrue...)
+		PACFlag := util.EncodeOrderPreservingVarUint64(h.PACparticipationFlag)
+		txNumBytes = append(txNumBytes, PACFlag...)
 	}
 	logger.Debugf("ToBytes() result: [%+v]", append(blockNumBytes, txNumBytes...))
 	return append(blockNumBytes, txNumBytes...)
@@ -116,7 +116,7 @@ func (h *Height) String() string {
 	if h == nil {
 		return "<nil>"
 	}
-	return fmt.Sprintf("{BlockNum: %d, TxNum: %d, PACParticipationFlag: %t}", h.BlockNum, h.TxNum, h.PACparticipationFlag)
+	return fmt.Sprintf("{BlockNum: %d, TxNum: %d, PACParticipationFlag: %d}", h.BlockNum, h.TxNum, h.PACparticipationFlag)
 }
 
 // AreSame returns true if both the heights are either nil or equal
