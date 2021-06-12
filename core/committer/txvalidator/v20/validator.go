@@ -432,9 +432,6 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 				}
 				return
 			} else if ptenv != nil {
-				//Checking duplicate transactions. Implementation from endorsmant block is below:
-				//Dispatcher validations like in Endorment validation
-
 				// Check duplicate transactions
 				erroneousResultEntry := v.checkTxIdDupsLedger(tIdx, chdr, v.LedgerResources)
 				if erroneousResultEntry != nil {
