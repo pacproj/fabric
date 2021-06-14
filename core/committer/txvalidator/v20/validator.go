@@ -8,6 +8,8 @@ package txvalidator
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io/ioutil"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	mspprotos "github.com/hyperledger/fabric-protos-go/msp"
 	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/bccsp"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/configtx"
 	commonerrors "github.com/hyperledger/fabric/common/errors"
@@ -112,6 +115,17 @@ type TxValidator struct {
 	LedgerResources  LedgerResources
 	Dispatcher       Dispatcher
 	CryptoProvider   bccsp.BCCSP
+}
+
+//the same as in fabric/core/endorser/endorser.go
+//TODO: make from two structs one and remove extra fields (WholeShardResponse definetely and  EncryptedVsr, EncryptedNsr possible)
+type ACInfo struct {
+	Shard              string
+	HashedVsr          string
+	HashedNsr          string
+	EncryptedVsr       string
+	EncryptedNsr       string
+	WholeShardResponse string //based64 TODO: decide does we need this variable?
 }
 
 var logger = flogging.MustGetLogger("committer.txvalidator")
@@ -442,7 +456,7 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 				//TODO: change this awful repeating code (in DecideTx, AbortTx parts this code is the same)
 				// Validate tx with plugins
 				logger.Debug("Validating transaction with plugins")
-				_, err := v.Dispatcher.Dispatch(tIdx, payload, d, block)
+				cde, err := v.Dispatcher.Dispatch(tIdx, payload, d, block)
 				if err != nil {
 					logger.Errorf("Dispatch for transaction txId = %s returned error: %s", txID, err)
 					switch err.(type) {
@@ -459,35 +473,77 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 						}
 						return
 					default:
+						results <- &blockValidationResult{
+							tIdx:           tIdx,
+							validationCode: cde,
+						}
+						return
 					}
 				}
 
 				//TODO: доделать сравнение хэшей PrepareTx с хэшами из transient store.
 				//		решено отложить это до запуска рабочего прототипа. См. вариант реализации в телеграм.
 
-				//printing TxId.json file data
-				pdp := "/etc/hyperledger/fabric/pacdata/"
-				cn := chdr.ChannelId
-				dlFileName := "pac" + txID + ".json"
+				localACMap := make(map[string]ACInfo)
 
-				logger.Debugf("getting data from file %s...\nData:\n", dlFileName)
-				data, err := ioutil.ReadFile(pdp + cn + "/" + dlFileName)
-				if err != nil {
+				if err := getLocalACMapByTxid(&localACMap, txID, chdr.ChannelId); err != nil {
+					logger.Errorf("%+v", err)
 					results <- &blockValidationResult{
-						tIdx: tIdx,
-						err:  err,
+						tIdx:           tIdx,
+						validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
 					}
 					return
 				}
-				logger.Debugf("%s", data)
-				logger.Warningf("PrepareTx Validation was OK")
+				logger.Warningf("PrepareTx validation is begining...")
+
+				//compare HashPairs from localACMap with HashPairs in PrepareTx validationData field
+				vdMap := make(map[int]common.HashPair)
+			VDLoop:
+				for i := range ptenv.SignedValidationData {
+					tmpVD := common.PACTxValidationData{}
+					err := proto.Unmarshal(ptenv.SignedValidationData[i], &tmpVD)
+					logger.Errorf("%+v", err)
+					if err != nil {
+						results <- &blockValidationResult{
+							tIdx:           tIdx,
+							validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
+						}
+						return
+					}
+					logger.Debugf("tmpVD: [%s]", tmpVD)
+					tmpHashPair := common.HashPair{}
+					err = proto.Unmarshal(tmpVD.ValidationData, &tmpHashPair)
+					if err != nil {
+						logger.Errorf("%+v", err)
+						results <- &blockValidationResult{
+							tIdx:           tIdx,
+							validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
+						}
+						return
+					}
+					vdMap[i] = tmpHashPair
+					logger.Debugf("PrepareTx-%d hashedVsr: [%s], hashedNsr: [%s]", i, base64.StdEncoding.EncodeToString(vdMap[i].HashedVsr), base64.StdEncoding.EncodeToString(vdMap[i].HashedNsr))
+					for _, v := range localACMap {
+						if v.HashedVsr == base64.StdEncoding.EncodeToString(vdMap[i].HashedVsr) && v.HashedNsr == base64.StdEncoding.EncodeToString(vdMap[i].HashedNsr) {
+							logger.Debugf("Identical hash pair has been found for shard [%s]", v.Shard)
+							continue VDLoop
+						}
+					}
+					logger.Errorf("Identical hash pairs was not found. Local AC data is: [%s], two first hash pairs of PrepareTx is: [%s], [%s]", localACMap, vdMap[0], vdMap[1])
+					results <- &blockValidationResult{
+						tIdx:           tIdx,
+						validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
+					}
+					return
+				}
+				logger.Warningf("PrepareTx validation was OK")
 				results <- &blockValidationResult{
 					tIdx:           tIdx,
 					validationCode: peer.TxValidationCode_VALID,
 				}
 				return
 			} else {
-				logger.Warningf("Error in getting txEnvelope from payload for transaction type [%s] in block number [%d] transaction index [%d]",
+				logger.Errorf("Error in getting txEnvelope from payload for transaction type [%s] in block number [%d] transaction index [%d]",
 					common.HeaderType(chdr.Type), block.Header.Number, tIdx)
 				results <- &blockValidationResult{
 					tIdx:           tIdx,
@@ -504,7 +560,7 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 			//TODO: change this awful repeating code (in AbortTx part code is the same)
 			ptenv, payload, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data)
 			if err != nil {
-				logger.Warningf("Error getting PrepareTx envelope from block: %+v", err)
+				logger.Errorf("Error getting DecideTx envelope from block: %+v", err)
 				results <- &blockValidationResult{
 					tIdx:           tIdx,
 					validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
@@ -514,7 +570,7 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 			if ptenv != nil {
 				// Validate tx with plugins
 				logger.Debug("Validating transaction with plugins")
-				_, err := v.Dispatcher.Dispatch(tIdx, payload, d, block)
+				cde, err := v.Dispatcher.Dispatch(tIdx, payload, d, block)
 				if err != nil {
 					logger.Errorf("Dispatch for transaction txId = %s returned error: %s", txID, err)
 					switch err.(type) {
@@ -531,6 +587,11 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 						}
 						return
 					default:
+						results <- &blockValidationResult{
+							tIdx:           tIdx,
+							validationCode: cde,
+						}
+						return
 					}
 				}
 			} else {
@@ -543,21 +604,71 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 				return
 			}
 
-			//TODO delete this awful repeating code
-			//printing TxId.json file data
-			pdp := "/etc/hyperledger/fabric/pacdata/"
-			cn := chdr.ChannelId
-			dlFileName := "pac" + txID + ".json"
-			logger.Debugf("getting data from file %s...\nData:\n", dlFileName)
-			data, err := ioutil.ReadFile(pdp + cn + "/" + dlFileName)
-			if err != nil {
+			localACMap := make(map[string]ACInfo)
+
+			if err := getLocalACMapByTxid(&localACMap, txID, chdr.ChannelId); err != nil {
+				logger.Errorf("%+v", err)
 				results <- &blockValidationResult{
-					tIdx: tIdx,
-					err:  err,
+					tIdx:           tIdx,
+					validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
 				}
 				return
 			}
-			logger.Debugf("%s", data)
+			logger.Warningf("DecideTx validation is begining...")
+
+			//compare HashedVsr from localACMap with hashing Vsr in DecideTx validationData field
+			vsrMap := make(map[int]string)
+			//creating BCCSP instance to operate with symmetric cryptography
+			csp, err := sw.NewDefaultSecurityLevel(chdr.ChannelId)
+			if err != nil {
+				logger.Errorf("%+v", err)
+				results <- &blockValidationResult{
+					tIdx:           tIdx,
+					validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
+				}
+				return
+			}
+			logger.Debugf("BCCSP instance successfully created")
+		VD2Loop:
+			for i := range ptenv.SignedValidationData {
+				tmpVD := common.PACTxValidationData{}
+				err := proto.Unmarshal(ptenv.SignedValidationData[i], &tmpVD)
+				if err != nil {
+					logger.Errorf("%+v", err)
+					results <- &blockValidationResult{
+						tIdx:           tIdx,
+						validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
+					}
+					return
+				}
+				logger.Debugf("tmpVD: [%s]", tmpVD)
+				tmpVsrResp := tmpVD.ValidationData
+				HashedVsrBytes, err := csp.Hash(tmpVsrResp, &bccsp.SHA256Opts{})
+
+				if err != nil {
+					logger.Errorf("%+v", err)
+					results <- &blockValidationResult{
+						tIdx:           tIdx,
+						validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
+					}
+					return
+				}
+				HashedVsr := base64.StdEncoding.EncodeToString(HashedVsrBytes)
+				vsrMap[i] = HashedVsr
+				logger.Debugf("DecideTx-part%d Vsr: [%s], Hashed Vsr: [%s]", i, base64.StdEncoding.EncodeToString(tmpVsrResp), HashedVsr)
+				for _, v := range localACMap {
+					if v.HashedVsr == HashedVsr {
+						logger.Debugf("Identical hashed Vsr has been found for shard [%s]", v.Shard)
+						continue VD2Loop
+					}
+				}
+				logger.Errorf("Identical hashed Vsr was not found. Local AC data is: [%s], VsrMap of DecideTx is: [%+v]", localACMap, vsrMap)
+				results <- &blockValidationResult{
+					tIdx:           tIdx,
+					validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
+				}
+				return
+			}
 
 			//TODO: validation is here
 			logger.Warningf("DecideTx Validation was OK")
@@ -574,7 +685,7 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 			//TODO: change this awful repeating code (in AbortTx part code is the same)
 			ptenv, payload, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data)
 			if err != nil {
-				logger.Warningf("Error getting PrepareTx envelope from block: %+v", err)
+				logger.Warningf("Error getting AbortTx envelope from block: %+v", err)
 				results <- &blockValidationResult{
 					tIdx:           tIdx,
 					validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
@@ -584,7 +695,7 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 			if ptenv != nil {
 				// Validate tx with plugins
 				logger.Debug("Validating transaction with plugins")
-				_, err := v.Dispatcher.Dispatch(tIdx, payload, d, block)
+				cde, err := v.Dispatcher.Dispatch(tIdx, payload, d, block)
 				if err != nil {
 					logger.Errorf("Dispatch for transaction txId = %s returned error: %s", txID, err)
 					switch err.(type) {
@@ -601,6 +712,11 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 						}
 						return
 					default:
+						results <- &blockValidationResult{
+							tIdx:           tIdx,
+							validationCode: cde,
+						}
+						return
 					}
 				}
 			} else {
@@ -620,9 +736,10 @@ func (v *TxValidator) validateTx(req *blockValidationRequest, results chan<- *bl
 			logger.Debugf("getting data from file %s...\nData:\n", dlFileName)
 			data, err := ioutil.ReadFile(pdp + cn + "/" + dlFileName)
 			if err != nil {
+				logger.Errorf("%+v", err)
 				results <- &blockValidationResult{
-					tIdx: tIdx,
-					err:  err,
+					tIdx:           tIdx,
+					validationCode: peer.TxValidationCode_INVALID_OTHER_REASON,
 				}
 				return
 			}
@@ -761,4 +878,23 @@ func (ds *dynamicCapabilities) V1_3Validation() bool {
 
 func (ds *dynamicCapabilities) V2_0Validation() bool {
 	return ds.cr.Capabilities().V2_0Validation()
+}
+
+func getLocalACMapByTxid(localACMap *map[string]ACInfo, txID string, cn string) error {
+	//printing TxId.json file data
+	pdp := "/etc/hyperledger/fabric/pacdata/"
+	dlFileName := "pac" + txID + ".json"
+
+	logger.Debugf("getting data from file %s...\nData:\n", dlFileName)
+	data, err := ioutil.ReadFile(pdp + cn + "/" + dlFileName)
+	if err != nil {
+		return err
+	}
+	logger.Debugf("%s", data)
+
+	err = json.Unmarshal(data, &localACMap)
+	if err != nil {
+		return err
+	}
+	return nil
 }
