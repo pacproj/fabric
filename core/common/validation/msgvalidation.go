@@ -95,6 +95,9 @@ func validateChannelHeader(cHdr *common.ChannelHeader) error {
 	case common.HeaderType_ENDORSER_TRANSACTION:
 	case common.HeaderType_CONFIG_UPDATE:
 	case common.HeaderType_CONFIG:
+	case common.HeaderType_PAC_PREPARE_TRANSACTION:
+	case common.HeaderType_PAC_DECIDE_TRANSACTION:
+	case common.HeaderType_PAC_ABORT_TRANSACTION:
 	default:
 		return errors.Errorf("invalid header type %s", common.HeaderType(cHdr.Type))
 	}
@@ -167,6 +170,7 @@ func validateEndorserTransaction(data []byte, hdr *common.Header) error {
 
 	// check for nil argument
 	if data == nil || hdr == nil {
+		putilsLogger.Debugf("data is: [%s] and header is: [%+v]", data, hdr)
 		return errors.New("nil arguments")
 	}
 
@@ -281,7 +285,10 @@ func ValidateTransaction(e *common.Envelope, cryptoProvider bccsp.BCCSP) (*commo
 
 	// continue the validation in a way that depends on the type specified in the header
 	switch common.HeaderType(chdr.Type) {
-	case common.HeaderType_ENDORSER_TRANSACTION:
+	case common.HeaderType_ENDORSER_TRANSACTION,
+		common.HeaderType_PAC_PREPARE_TRANSACTION,
+		common.HeaderType_PAC_DECIDE_TRANSACTION,
+		common.HeaderType_PAC_ABORT_TRANSACTION:
 		// Verify that the transaction ID has been computed properly.
 		// This check is needed to ensure that the lookup into the ledger
 		// for the same TxID catches duplicates.
@@ -295,8 +302,31 @@ func ValidateTransaction(e *common.Envelope, cryptoProvider bccsp.BCCSP) (*commo
 			return nil, pb.TxValidationCode_BAD_PROPOSAL_TXID
 		}
 
+		if common.HeaderType(chdr.Type) != common.HeaderType_ENDORSER_TRANSACTION {
+			//Getting data from payload.Data
+			pactxenv, pactxpayload, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data)
+			putilsLogger.Debugf("pactxenv: [%s],  pactxpayload: [%s]", pactxenv, pactxpayload)
+			if err != nil {
+				putilsLogger.Warningf("Error getting [%s] envelope from block: %+v", common.HeaderType(chdr.Type), err)
+				return payload, pb.TxValidationCode_INVALID_OTHER_REASON
+			}
+			if pactxenv != nil {
+				//replacing channel header
+				//to pass validateEndorserTransaction checks
+				chdr.Type = int32(common.HeaderType_ENDORSER_TRANSACTION)
+				pactxpayload.Header.ChannelHeader = protoutil.MarshalOrPanic(chdr)
+				err = validateEndorserTransaction(pactxpayload.Data, pactxpayload.Header)
+				if err != nil {
+					putilsLogger.Errorf("validateEndorserTransaction returns err: %+v", err)
+					return payload, pb.TxValidationCode_INVALID_OTHER_REASON
+				}
+				return payload, pb.TxValidationCode_VALID
+			}
+			putilsLogger.Errorf("pactxenv is nil")
+			return nil, pb.TxValidationCode_BAD_PAYLOAD
+
+		}
 		err = validateEndorserTransaction(payload.Data, payload.Header)
-		putilsLogger.Debugf("ValidateTransactionEnvelope returns err %s", err)
 
 		if err != nil {
 			putilsLogger.Errorf("validateEndorserTransaction returns err %s", err)

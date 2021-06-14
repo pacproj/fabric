@@ -192,7 +192,27 @@ func (klv *KeyLevelValidator) extractDependenciesForTx(blockNum, txNum uint64, e
 		logger.Warningf("while executing GetPayload got error '%s', skipping tx at height (%d,%d)", err, blockNum, txNum)
 		return
 	}
-
+	chdr, err := protoutil.UnmarshalChannelHeader(payl.Header.ChannelHeader)
+	if err != nil {
+		logger.Warningf("while executing GetChannelHeader got error '%s', skipping tx at height (%d,%d)", err, blockNum, txNum)
+		return
+	}
+	switch chdr.Type {
+	case int32(common.HeaderType_PAC_PREPARE_TRANSACTION),
+		int32(common.HeaderType_PAC_DECIDE_TRANSACTION),
+		int32(common.HeaderType_PAC_ABORT_TRANSACTION):
+		ptenv, pactxpayload, err := protoutil.GetPACTxEnvelopeFromPayload(payl.Data)
+		if err != nil {
+			logger.Warningf("while executing GetPACTxEnvelopeFromPayload got error '%s', skipping tx at height (%d,%d)", err, blockNum, txNum)
+			return
+		} else if ptenv == nil {
+			logger.Warningf("while executing GetPACTxEnvelopeFromPayload got error '%s', skipping tx at height (%d,%d)", errors.New("PAC tx envelope is nil"), blockNum, txNum)
+			return
+		} else {
+			//continue processing with original endorser payload
+			payl = pactxpayload
+		}
+	}
 	tx, err := protoutil.UnmarshalTransaction(payl.Data)
 	if err != nil {
 		logger.Warningf("while executing GetTransaction got error '%s', skipping tx at height (%d,%d)", err, blockNum, txNum)

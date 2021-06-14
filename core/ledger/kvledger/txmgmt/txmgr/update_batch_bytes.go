@@ -53,7 +53,11 @@ func deterministicBytesForPubAndHashUpdates(u *privacyenabledstate.UpdateBatch) 
 	updates := &Updates{
 		Kvwrites: kvWrites,
 	}
-
+	//TODO: delete this debug printing
+	logger.Debugf("kvWrites: [%s]", kvWrites)
+	/*if kvWrites!= nil {
+		logger.Debugf("version_bytes value: [%s]", kvWrites[])
+	}*/
 	batchBytes, err := proto.Marshal(updates)
 	return batchBytes, errors.Wrap(err, "error constructing deterministic bytes from update batch")
 }
@@ -80,6 +84,9 @@ func genKVs(updates map[string]*statedb.VersionedValue) []*KVWrite {
 	kvWrites := []*KVWrite{}
 	for _, key := range keys {
 		val := updates[key]
+		if val.Version != nil {
+			logger.Debugf("val.Version.PACparticipationFlag is: [%d] val.Version is: [%s]", val.Version.PACparticipationFlag, val.Version)
+		}
 		kvWrites = append(
 			kvWrites,
 			&KVWrite{

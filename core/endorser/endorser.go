@@ -7,15 +7,23 @@ SPDX-License-Identifier: Apache-2.0
 package endorser
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric-chaincode-go/shim"
+	"github.com/hyperledger/fabric-protos-go/common"
 	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric-protos-go/transientstore"
+	"github.com/hyperledger/fabric/bccsp"
+	"github.com/hyperledger/fabric/bccsp/sw"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/lifecycle"
@@ -37,6 +45,23 @@ var endorserLogger = flogging.MustGetLogger("endorser")
 
 type PrivateDataDistributor interface {
 	DistributePrivateData(channel string, txID string, privateData *transientstore.TxPvtReadWriteSetWithConfigInfo, blkHt uint64) error
+}
+
+type PACInfo struct {
+	Shard              string
+	HashedVsr          string
+	HashedNsr          string
+	EncryptedVsr       string
+	EncryptedNsr       string
+	WholeShardResponse string //based64 TODO: decide does we need this variable?
+}
+
+//VsrNsrPair is pair of hashes returned from endorser peer to form PrepareTx
+type VsrNsrPair struct {
+	//Vsr endorser shard response (hashed positive response)
+	Vsr []byte
+	//Nsr endorser shard response (hashed negative response)
+	Nsr []byte
 }
 
 // Support contains functions that the endorser requires to execute its tasks
@@ -450,7 +475,23 @@ func (e *Endorser) ProcessProposalSuccessfullyOrError(up *UnpackedProposal) (*pb
 	if err != nil {
 		meterLabels = append(meterLabels, "chaincodeerror", strconv.FormatBool(false))
 		e.Metrics.EndorsementsFailed.With(meterLabels...).Add(1)
-		return nil, errors.WithMessage(err, "endorsing with plugin failed")
+		return nil, errors.WithMessage(err, "endorsement with plugin failed")
+	}
+
+	//endorse PAC requests and messages
+	ccPropPayl, err := protoutil.UnmarshalChaincodeProposalPayload(txParams.Proposal.Payload)
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed to get ChaincodeProposalPayload to check if it is PAC-request")
+	}
+	//check if it is a request for PAC
+	if _, ok := ccPropPayl.TransientMap["pac"]; ok {
+		endorserLogger.Debugf("request for a PAC was got for TxId: [%s] and ChanicodeName: [%s]", up.ChannelHeader.TxId, up.ChaincodeName)
+		endorserLogger.Debugf("ok: [%t]", ok)
+		endorserLogger.Debugf("transient map: [%+v]", ccPropPayl.TransientMap)
+		err = e.HandleACRequest(txParams.TXSimulator, ccPropPayl, up.ChannelID(), up.ChaincodeName, up.TxID(), res)
+		if err != nil {
+			return nil, errors.WithMessage(err, "failed to create Vsr Nsr hashes")
+		}
 	}
 
 	return &pb.ProposalResponse{
@@ -499,4 +540,404 @@ func CreateCCEventBytes(ccevent *pb.ChaincodeEvent) ([]byte, error) {
 
 func decorateLogger(logger *flogging.FabricLogger, txParams *ccprovider.TransactionParams) *flogging.FabricLogger {
 	return logger.With("channel", txParams.ChannelID, "txID", shorttxid(txParams.TxID))
+}
+
+func (e *Endorser) HandleACRequest(txSim ledger.TxSimulator, ccPropPayl *pb.ChaincodeProposalPayload, chanName string, ccName string, txId string, res *pb.Response) error {
+
+	if txSim == nil {
+		return errors.Errorf("tx simulator is nil %s", ccName)
+	}
+	endorserLogger.Debugf("tx simulator is running for TxId: [%s] and ChanicodeName: [%s]", txId, ccName)
+
+	pacDataPath := "/etc/hyperledger/fabric/pacdata/"
+	shardKeyPath := pacDataPath + "packeys/" + chanName + "/" + chanName + ".key"
+
+	if _, ok := ccPropPayl.TransientMap["pacCR"]; ok {
+		endorserLogger.Debugf("handling AC commit request...")
+		//TODO: create BCCSP and getting VsrNsr pair
+		//in parallel with endorsement VsrRequest
+
+		//creating BCCSP instance to operate with symmetric cryptography
+		ACTxid, err := getTxIdFromTM(ccPropPayl)
+		if err != nil {
+			return err
+		}
+		csp, err := sw.NewDefaultSecurityLevel(chanName)
+		if err != nil {
+			return errors.Errorf("failed to create BCCSP instance for TxId: [%s]. BCCSP: [%+v]", string(ACTxid), csp)
+		}
+		endorserLogger.Debugf("BCCSP instance successfully created")
+		localACTM := make(map[string]PACInfo)
+		tmpACInfo := PACInfo{}
+		//take from file with this channel name
+		err = getLocalPACMapByTxid(ccPropPayl, &localACTM, pacDataPath, chanName)
+		if err != nil {
+			return err
+		}
+		ok := false
+		for key, val := range localACTM {
+			savedThisChanName := string(val.Shard)
+			//find this shard channelname in local store to get & send encrypted Vsr or Nsr
+			if key != "pac" && key[:7] == "pacpart" && savedThisChanName == chanName {
+				tmpACInfo.EncryptedVsr = val.EncryptedVsr
+				tmpACInfo.EncryptedNsr = val.EncryptedNsr
+				endorserLogger.Debugf("Encrypted Vsr & Nsr was found: tmpACInfo.EncryptedVsr is [%s] and tmpACInfo.EncryptedNsr is [%s]", tmpACInfo.EncryptedVsr, tmpACInfo.EncryptedNsr)
+				ok = true
+			}
+		}
+		if !ok {
+			return errors.New("failed to find this channel name in the local storage")
+		}
+
+		if err := e.endorseVsrRequest(ccPropPayl, chanName, pacDataPath); err != nil {
+			//response with Nsr
+			endorserLogger.Warnf("Vsr request endorsement failed: [%s]. Sending Nsr...", err)
+			encMessage := tmpACInfo.EncryptedNsr
+			endorserLogger.Debugf("base64 encoded message: [%s]", encMessage)
+			res.Message = encMessage
+
+		} else {
+			//response with Vsr
+			endorserLogger.Warnf("Vsr request endorsement finished successfully. Sending Vsr...")
+			encMessage := tmpACInfo.EncryptedVsr
+			endorserLogger.Debugf("base64 encoded message: [%s]", encMessage)
+			res.Message = encMessage
+		}
+	} else if _, ok := ccPropPayl.TransientMap["pacHP"]; ok {
+		endorserLogger.Debugf("handling AC hash pairs from other shards...")
+		//creating second response to the Atomic Commit client
+		//and saving HashPairs of other shards in the peer filesystem
+		err := saveHashPairs(ccPropPayl, chanName, pacDataPath)
+		if err != nil {
+			return errors.Errorf("failed to save atomic commit parties hash pairs: [%+v]", err)
+		}
+
+	} else {
+		//generating response to the first client request for a private atomic commit
+		thisChanACInfo := PACInfo{}
+		encodedPACResponseMessage, err := createInitialACResponse(shardKeyPath, txId, chanName, &thisChanACInfo)
+		if err != nil {
+			return errors.Errorf("failed to create PAC response: [%+v]", err)
+		}
+		res.Message = encodedPACResponseMessage
+
+		//save Dependency List
+		//TODO: start blocks timer of dependency list life
+		err = saveDependencyList(ccPropPayl, chanName, txId, pacDataPath, &thisChanACInfo)
+		if err != nil {
+			return errors.Errorf("failed to save dependecy list: [%+v]", err)
+		}
+		endorserLogger.Debug("dependency list successfuly saved")
+	}
+
+	return nil
+}
+
+func createInitialACResponse(shardKeyPath string, txId string, chanName string, thisChanACInfo *PACInfo) (string, error) {
+
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", errors.Errorf("failed to get working directory path for TxId: [%s]", txId)
+	}
+	err = os.MkdirAll(chanName, 0755)
+	if err != nil {
+		return "", errors.Errorf("failed to create endorser temporary path for TxId: [%s]", txId)
+	}
+	endorserLogger.Debugf("new keys directory was successfuly created in: [%s] for TxId: [%s]", dir+"/"+chanName, txId)
+	//TODO: should we delete td automatically somewhere?
+	/*defer func() {
+		err = os.RemoveAll(td)
+		if err != nil {
+			endorserLogger.Debugf("Error while deleting temporary dir with crypto keys for a PAC: [%+v]", err)
+		}
+	}()*/
+	hashPair := common.HashPair{}
+
+	err = generateBasedTxidHashPair(&hashPair, chanName, txId, shardKeyPath, thisChanACInfo)
+	if err != nil {
+		return "", err
+	}
+
+	endorserLogger.Debugf("hashPair struct: [%+v]", hashPair)
+	message, err := proto.Marshal(&hashPair)
+	if err != nil {
+		return "", errors.Errorf("failed to marshal hashPair: [%+v]", err)
+	}
+	//add VsrNsrHashes to Response
+	encMessage := base64.StdEncoding.EncodeToString(message)
+	endorserLogger.Debugf("base64 encoded message: [%s]", encMessage)
+	return encMessage, nil
+}
+
+func generateBasedTxidHashPair(hashPair *common.HashPair, chanName string, txId string, shardKeyPath string, thisChanACInfo *PACInfo) error {
+	//creating BCCSP instance to operate with symmetric cryptography
+	csp, err := sw.NewDefaultSecurityLevel(chanName)
+	if err != nil {
+		return errors.Errorf("failed to create BCCSP instance for TxId: [%s]. BCCSP: [%+v]", txId, csp)
+	}
+	endorserLogger.Debugf("BCCSP instance successfully created")
+
+	//getting symmetric key
+	//TODO: delete implementation which using absolute path.
+	//It is better to generate keys with BCCSP and spread them using the gossip
+
+	hashPreimagesPair := VsrNsrPair{}
+	err = generateBasedTxidVsrNsrPair(csp, &hashPreimagesPair, chanName, txId, shardKeyPath)
+	if err != nil {
+		return err
+	}
+
+	thisChanACInfo.EncryptedVsr = base64.StdEncoding.EncodeToString(hashPreimagesPair.Vsr)
+	thisChanACInfo.EncryptedNsr = base64.StdEncoding.EncodeToString(hashPreimagesPair.Nsr)
+
+	HashedVsr, err := csp.Hash(hashPreimagesPair.Vsr, &bccsp.SHA256Opts{})
+	if err != nil {
+		return errors.Errorf("failed to hash Vsr: [%+v]", err)
+	}
+	endorserLogger.Debugf("Hashed Vsr: string: [%s], hex: [% #x]", base64.StdEncoding.EncodeToString(HashedVsr), HashedVsr)
+	HashedNsr, err := csp.Hash(hashPreimagesPair.Nsr, &bccsp.SHA256Opts{})
+	if err != nil {
+		return errors.Errorf("failed to hash Nsr: [%+v]", err)
+	}
+	endorserLogger.Debugf("Hashed Nsr: string: [%s], hex: [% #x]", base64.StdEncoding.EncodeToString(HashedNsr), HashedNsr)
+
+	//marshal using protobuf structure
+	hashPair.HashedVsr = HashedVsr
+	hashPair.HashedNsr = HashedNsr
+
+	return nil
+}
+
+func generateBasedTxidVsrNsrPair(csp bccsp.BCCSP, hashPreimagesPair *VsrNsrPair, chanName string, txId string, shardKeyPath string) error {
+	key, err := ioutil.ReadFile(shardKeyPath)
+	if err != nil {
+		return errors.Errorf("failed to read file: [%+v]", err)
+	}
+	endorserLogger.Debugf("for channel [%s] the PAC-key [%s] was found", chanName, key)
+	//importing key splitting the EOF byte
+	k, err := csp.KeyImport(key[:32], &bccsp.AES256ImportKeyOpts{Temporary: false})
+	if err != nil {
+		return errors.Errorf("failed to import key: [%+v]", err)
+	}
+	endorserLogger.Debugf("key was successfuly imported")
+	decryptedVsr := bytes.NewBufferString(txId)
+	decryptedVsr.WriteString("1")
+	endorserLogger.Debugf("Decrypted Vsr: [%s]", decryptedVsr.String())
+	decryptedNsr := bytes.NewBufferString(txId)
+	decryptedNsr.WriteString("0")
+	endorserLogger.Debugf("Decrypted Nsr: [%s]", decryptedNsr.String())
+	PRNGReader := bytes.NewReader([]byte(txId))
+	aesOpts := bccsp.AESCBCPKCS7ModeOpts{
+		PRNG: PRNGReader,
+	}
+	Vsr, err := csp.Encrypt(k, decryptedVsr.Bytes(), aesOpts)
+	if err != nil {
+		return errors.Errorf("failed to encrypt Vsr: [%+v]", err)
+	}
+	endorserLogger.Debugf("Encrypted Vsr: string: [%s], hex: [% #x] or [%x]", base64.StdEncoding.EncodeToString(Vsr), Vsr, Vsr)
+	Nsr, err := csp.Encrypt(k, decryptedNsr.Bytes(), aesOpts)
+	if err != nil {
+		return errors.Errorf("failed to encrypt Nsr: [%+v]", err)
+	}
+	endorserLogger.Debugf("Encrypted Nsr: string: [%s], hex: [% #x] or [%x]", base64.StdEncoding.EncodeToString(Nsr), Nsr, Nsr)
+
+	hashPreimagesPair.Vsr = Vsr
+	hashPreimagesPair.Nsr = Nsr
+	return nil
+}
+
+func saveDependencyList(ccpp *pb.ChaincodeProposalPayload, cn string, tid string, pdp string, thisChanACInfo *PACInfo) error {
+	pacMap := make(map[string]PACInfo)
+	endorserLogger.Debugf("saving dependency list from transient map: [%+v]", ccpp.TransientMap)
+	for key, val := range ccpp.TransientMap {
+		v := string(val)
+		//omitting this shard channelname and not pac keys
+		if key != "pac" && key[:7] == "pacpart" { //should we omit the current channel?
+			if v == cn {
+				pacMap[key] = PACInfo{
+					Shard:        v,
+					EncryptedVsr: thisChanACInfo.EncryptedVsr,
+					EncryptedNsr: thisChanACInfo.EncryptedNsr}
+			} else {
+				pacMap[key] = PACInfo{
+					Shard: v}
+			}
+			endorserLogger.Debugf("Shard [%s] AC dependency successfuly created in memory", v)
+		}
+	}
+	m, err := json.MarshalIndent(pacMap, "", "\t")
+	if err != nil {
+		return err
+	}
+
+	err = os.MkdirAll(pdp+cn, 0755)
+	if err != nil {
+		return err
+	}
+	endorserLogger.Debugf("directory [%s] successfully created", pdp+cn)
+
+	dlFileName := "pac" + tid + ".json"
+	if err := savePACMapLocally(m, pdp+cn+"/"+dlFileName); err != nil {
+		return err
+	}
+	return nil
+}
+
+func saveHashPairs(ccpp *pb.ChaincodeProposalPayload, cn string, pdp string) error {
+	localPACMap := make(map[string]PACInfo)
+	updatedPACMap := make(map[string]PACInfo)
+	tmpPACInfo := PACInfo{}
+
+	//get txid for current channel to update
+	//the corresponding local file with dependency list
+
+	if err := getLocalPACMapByTxid(ccpp, &localPACMap, pdp, cn); err != nil {
+		return err
+	}
+	for key := range ccpp.TransientMap {
+		//omitting this shard channelname and not pac keys
+		if len(key) <= 7 || len(key)-2 < 0 {
+			continue
+		}
+		if key[:7] == "pacpart" && key[len(key)-2:] == "HP" {
+			endorserLogger.Debugf("checking HashPair key - %s", key)
+			//check if this shard is in the local dependency list
+			dlKey := key[:len(key)-2]
+			if localPACMap[dlKey].Shard == string(ccpp.TransientMap[dlKey]) {
+				//TODO: should we check that HashPair was not saved before? to prevent the brute force attack by client
+				//TODO: should we check here that paylad was not changed by malicious client?
+
+				//saving HashPair
+				endorserLogger.Debugf("saving HashPair for tmap key [%s]...", key)
+				tmpPACInfo = localPACMap[dlKey]
+				tmpHashPair := common.HashPair{}
+				err := proto.Unmarshal(ccpp.TransientMap[key], &tmpHashPair)
+				if err != nil {
+					return err
+				}
+				based64Vsr := base64.StdEncoding.EncodeToString(tmpHashPair.HashedVsr)
+				endorserLogger.Debugf("based64Vsr: [%s]", based64Vsr)
+				based64Nsr := base64.StdEncoding.EncodeToString(tmpHashPair.HashedNsr)
+				endorserLogger.Debugf("based64Nsr: [%s]", based64Nsr)
+
+				tmpPACInfo.HashedVsr = based64Vsr
+				tmpPACInfo.HashedNsr = based64Nsr
+				updatedPACMap[dlKey] = tmpPACInfo
+
+			} else {
+				return errors.Errorf("pac shards are not the same for key: [%s], localPACMap value: [%s], TransientMap value: [%s]", dlKey, localPACMap[dlKey].Shard, string(ccpp.TransientMap[dlKey]))
+			}
+		}
+	}
+
+	m, err := json.MarshalIndent(updatedPACMap, "", "\t")
+	if err != nil {
+		return err
+	}
+	filePath, err := getFilePathByTxid(ccpp, pdp, cn)
+	if err != nil {
+		return err
+	}
+	if err := savePACMapLocally(m, filePath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (e *Endorser) endorseVsrRequest(ccpp *pb.ChaincodeProposalPayload, cn string, pdp string) error {
+	//we need:
+	//1. to check that txid.json is in the local directory
+	//(it proves that AC initial_request was successfuly endorsed)
+	//2. to check that txid.json contains hash pairs for every channel inside itself
+	//(it proves that endorsers got hash pairs from AC client)
+	//3. to check that txid was added to the ledger with TX_VALIDATION_CODE 0 (i.e. VALID)
+	//(it proves that PREPARE_TX was successfully added to the ledger)
+
+	localPACMap := make(map[string]PACInfo)
+
+	//so lets do 1.
+	if err := getLocalPACMapByTxid(ccpp, &localPACMap, pdp, cn); err != nil {
+		return err
+	}
+	//lets do 2.
+	for key := range localPACMap {
+		if localPACMap[key].HashedNsr == "" {
+			return errors.Errorf("HashedNsr was not received by the endorser for channel %s", localPACMap[key].Shard)
+		}
+		if localPACMap[key].HashedVsr == "" {
+			return errors.Errorf("HashedVsr was not received by the endorser for channel %s", localPACMap[key].Shard)
+		}
+	}
+
+	//lets do 3.
+	txid, err := getTxIdFromTM(ccpp)
+	if err != nil {
+		return err
+	}
+	pt, err := e.Support.GetTransactionByID(cn, txid)
+	if err != nil {
+		return err
+	}
+	if pt.ValidationCode != int32(pb.TxValidationCode_VALID) {
+		return errors.Errorf("prepareTx commit checking failed: Validation code for txid [%s] is invalid: [%s]", txid, pb.TxValidationCode(pt.ValidationCode).String())
+	}
+	return nil
+}
+
+func savePACMapLocally(m []byte, path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	endorserLogger.Debugf("file [%s] successfully prepared for writing", f)
+	_, err = f.Write(m)
+	if err != nil {
+		return err
+	}
+	f.Close()
+	endorserLogger.Debugf("pac data was successfully written. Printing...")
+	savedData, err := ioutil.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	endorserLogger.Debugf("%s", savedData)
+	return nil
+}
+
+func getLocalPACMapByTxid(ccpp *pb.ChaincodeProposalPayload, localPACMap *map[string]PACInfo, pdp string, cn string) error {
+
+	filePath, err := getFilePathByTxid(ccpp, pdp, cn)
+	if err != nil {
+		return err
+	}
+
+	endorserLogger.Debugf("getting data from file %s...\nData:\n", filePath)
+
+	data, err := ioutil.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(data, localPACMap)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func getFilePathByTxid(ccpp *pb.ChaincodeProposalPayload, pdp string, cn string) (string, error) {
+	txid, err := getTxIdFromTM(ccpp)
+	if err != nil {
+		return "", err
+	}
+	dlFileName := "pac" + txid + ".json"
+	filePath := pdp + cn + "/" + dlFileName
+	return filePath, nil
+}
+
+func getTxIdFromTM(ccpp *pb.ChaincodeProposalPayload) (string, error) {
+	txid, ok := ccpp.TransientMap["pactxid"]
+	if !ok {
+		return "", errors.Errorf("Failed to find txid key in transient map")
+	}
+	return string(txid), nil
 }

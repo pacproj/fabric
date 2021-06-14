@@ -194,6 +194,7 @@ func (vdb *versionedDB) ApplyUpdates(batch *statedb.UpdateBatch, height *version
 			if vv.Value == nil {
 				dbBatch.Delete(dataKey)
 			} else {
+				logger.Debugf("encoding VersionedValue...")
 				encodedVal, err := encodeValue(vv)
 				if err != nil {
 					return err
@@ -206,7 +207,10 @@ func (vdb *versionedDB) ApplyUpdates(batch *statedb.UpdateBatch, height *version
 	// If a given height is nil, it denotes that we are committing pvt data of old blocks.
 	// In this case, we should not store a savepoint for recovery. The lastUpdatedOldBlockList
 	// in the pvtstore acts as a savepoint for pvt data.
+	//TODO: delete this debug printing
+	logger.Debugf("savepoint height is: [%s]", height)
 	if height != nil {
+		logger.Debugf("savepoint height value is: [%s]", *height)
 		dbBatch.Put(savePointKey, height.ToBytes())
 	}
 	// Setting snyc to true as a precaution, false may be an ok optimization after further testing.

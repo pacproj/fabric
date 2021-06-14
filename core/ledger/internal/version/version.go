@@ -20,17 +20,29 @@ import (
 	"fmt"
 
 	"github.com/hyperledger/fabric/common/ledger/util"
+	//TODO: remove this after successful debug
+	"github.com/hyperledger/fabric/common/flogging"
 )
+
+var logger = flogging.MustGetLogger("versionheight")
 
 // Height represents the height of a transaction in blockchain
 type Height struct {
 	BlockNum uint64
 	TxNum    uint64
+	//the not zero key means that the value is locked due to
+	//changes are making by an atomic commit
+	PACparticipationFlag uint64
 }
 
 // NewHeight constructs a new instance of Height
 func NewHeight(blockNum, txNum uint64) *Height {
-	return &Height{blockNum, txNum}
+	return &Height{blockNum, txNum, 0}
+}
+
+// NewHeightWithPACFlag constructs a new instance of Height with set PACparticipationFlag
+func NewHeightWithPACFlag(blockNum, txNum uint64, pacParticipationFlag uint64) *Height {
+	return &Height{blockNum, txNum, pacParticipationFlag}
 }
 
 // NewHeightFromBytes constructs a new instance of Height from serialized bytes
@@ -43,13 +55,41 @@ func NewHeightFromBytes(b []byte) (*Height, int, error) {
 	if err != nil {
 		return nil, -1, err
 	}
-	return NewHeight(blockNum, txNum), n1 + n2, nil
+	//checking if the PACParticipationFlag is set in the end of serialized bytes
+	//we have to read remaining bytes after blockNum and txNum bytes (so, n1+n2)
+	if string(b[n1+n2:]) != "" {
+		logger.Debugf("in the condition to check PACParticipationFlag, b[n2:] is: [%s]\n", b[n2:])
+		//decode here last part of bytes and return the Height with the value of PACParticipationFlag
+		pacParticipationFlag, n3, err := util.DecodeOrderPreservingVarUint64(b[n1+n2:])
+		if err != nil {
+			return nil, -1, err
+		}
+		logger.Debugf("pacParticipationFlag is: [%d]", pacParticipationFlag)
+		if pacParticipationFlag != 0 {
+			return NewHeightWithPACFlag(blockNum, txNum, pacParticipationFlag), n1 + n2 + n3, nil
+		} else {
+			return NewHeightWithPACFlag(blockNum, txNum, pacParticipationFlag), n1 + n2 + n3, nil
+		}
+
+	} else {
+		//return height with PACParticipationFlag which is set to false by default
+		return NewHeight(blockNum, txNum), n1 + n2, nil
+	}
 }
 
 // ToBytes serializes the Height
 func (h *Height) ToBytes() []byte {
 	blockNumBytes := util.EncodeOrderPreservingVarUint64(h.BlockNum)
 	txNumBytes := util.EncodeOrderPreservingVarUint64(h.TxNum)
+
+	//add PACparticipation flag to serialized bytes (if it is true)
+	logger.Debugf("before checking and the h.PACparticipationFlag is: [%t]", h.PACparticipationFlag)
+	if h.PACparticipationFlag != 0 {
+		logger.Debugf("in condition")
+		PACFlag := util.EncodeOrderPreservingVarUint64(h.PACparticipationFlag)
+		txNumBytes = append(txNumBytes, PACFlag...)
+	}
+	logger.Debugf("ToBytes() result: [%+v]", append(blockNumBytes, txNumBytes...))
 	return append(blockNumBytes, txNumBytes...)
 }
 
@@ -76,7 +116,7 @@ func (h *Height) String() string {
 	if h == nil {
 		return "<nil>"
 	}
-	return fmt.Sprintf("{BlockNum: %d, TxNum: %d}", h.BlockNum, h.TxNum)
+	return fmt.Sprintf("{BlockNum: %d, TxNum: %d, PACParticipationFlag: %d}", h.BlockNum, h.TxNum, h.PACparticipationFlag)
 }
 
 // AreSame returns true if both the heights are either nil or equal

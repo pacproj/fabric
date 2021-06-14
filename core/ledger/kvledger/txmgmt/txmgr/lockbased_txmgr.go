@@ -179,6 +179,7 @@ func (txmgr *LockBasedTxMgr) ValidateAndPrepare(blockAndPvtdata *ledger.BlockAnd
 		txmgr.reset()
 		return nil, nil, err
 	}
+	logger.Debug("public batch is:", batch.PubUpdates.Updates)
 	txmgr.current = &current{block: block, batch: batch}
 	if err := txmgr.invokeNamespaceListeners(); err != nil {
 		txmgr.reset()
@@ -646,5 +647,7 @@ func (txmgr *LockBasedTxMgr) updateStateListeners() {
 }
 
 func (txmgr *LockBasedTxMgr) reset() {
+	//TODO: delete this debug printing
+	logger.Error("RESET was called")
 	txmgr.current = nil
 }

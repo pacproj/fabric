@@ -224,7 +224,47 @@ func preprocessProtoBlock(postOrderSimulatorProvider PostOrderSimulatorProvider,
 		txType := common.HeaderType(chdr.Type)
 		logger.Debugf("txType=%s", txType)
 		txStatInfo.TxType = txType
-		if txType == common.HeaderType_ENDORSER_TRANSACTION {
+		if txType == common.HeaderType_PAC_PREPARE_TRANSACTION ||
+			txType == common.HeaderType_PAC_DECIDE_TRANSACTION ||
+			txType == common.HeaderType_PAC_ABORT_TRANSACTION {
+			//extract actions from the Private Atomic Commit Transaction
+			pactxenv, pactxpayload, err := protoutil.GetPACTxEnvelopeFromPayload(payload.Data)
+			if err != nil {
+				logger.Warningf("Error getting [%s] envelope from block: %+v", common.HeaderType(chdr.Type), err)
+				txsFilter.SetFlag(txIndex, peer.TxValidationCode_INVALID_OTHER_REASON)
+				continue
+			}
+			if pactxenv != nil {
+				tx, err := protoutil.UnmarshalTransaction(pactxpayload.Data)
+				if err != nil {
+					logger.Warningf("Error unmarshalling [%s] payload data from [%s] payload: %+v", common.HeaderType(chdr.Type), common.HeaderType(chdr.Type), err)
+					txsFilter.SetFlag(txIndex, peer.TxValidationCode_INVALID_OTHER_REASON)
+					continue
+				}
+				if len(tx.Actions) == 0 {
+					logger.Warningf("[%s]: %+v", common.HeaderType(chdr.Type), errors.New("at least one TransactionAction required"))
+					txsFilter.SetFlag(txIndex, peer.TxValidationCode_INVALID_OTHER_REASON)
+					continue
+				}
+				_, respPayload, err := protoutil.GetPayloads(tx.Actions[0])
+				if err != nil {
+					logger.Warningf("TxValidationCode = NIL_TXACTION for [%s]", common.HeaderType(chdr.Type))
+					txsFilter.SetFlag(txIndex, peer.TxValidationCode_NIL_TXACTION)
+					continue
+				}
+				txStatInfo.ChaincodeID = respPayload.ChaincodeId
+				txRWSet = &rwsetutil.TxRwSet{}
+				if err = txRWSet.FromProtoBytes(respPayload.Results); err != nil {
+					logger.Warningf("Error: [%s]: %+v", common.HeaderType(chdr.Type), err)
+					txsFilter.SetFlag(txIndex, peer.TxValidationCode_INVALID_OTHER_REASON)
+					continue
+				}
+			} else {
+				logger.Warningf("Unknown transaction type [%s] in block number [%d]",
+					common.HeaderType(chdr.Type), blk.Header.Number)
+				continue
+			}
+		} else if txType == common.HeaderType_ENDORSER_TRANSACTION {
 			// extract actions from the envelope message
 			respPayload, err := protoutil.GetActionFromEnvelope(envBytes)
 			if err != nil {
@@ -274,6 +314,7 @@ func preprocessProtoBlock(postOrderSimulatorProvider PostOrderSimulatorProvider,
 				id:                      chdr.TxId,
 				rwset:                   txRWSet,
 				containsPostOrderWrites: containsPostOrderWrites,
+				headerType:              txType,
 			})
 		}
 	}

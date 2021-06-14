@@ -29,12 +29,12 @@ func TestNewPubAndHashUpdates(t *testing.T) {
 func TestContainsPostOrderWrites(t *testing.T) {
 	u := newPubAndHashUpdates()
 	rws := &rwsetutil.TxRwSet{}
-	require.NoError(t, u.applyWriteSet(rws, nil, nil, false))
+	require.NoError(t, u.applyWriteSet(rws, nil, nil, false, false, 0))
 	require.False(t, u.publicUpdates.ContainsPostOrderWrites)
-	require.NoError(t, u.applyWriteSet(rws, nil, nil, true))
+	require.NoError(t, u.applyWriteSet(rws, nil, nil, true, false, 0))
 	require.True(t, u.publicUpdates.ContainsPostOrderWrites)
 	// once set to true, should always return true
-	require.NoError(t, u.applyWriteSet(rws, nil, nil, false))
+	require.NoError(t, u.applyWriteSet(rws, nil, nil, false, false, 0))
 	require.True(t, u.publicUpdates.ContainsPostOrderWrites)
 }
 

@@ -136,6 +136,33 @@ func (d *DB) Commit(block *common.Block) error {
 				}
 			}
 
+		} else if common.HeaderType(chdr.Type) == common.HeaderType_PAC_PREPARE_TRANSACTION ||
+			common.HeaderType(chdr.Type) == common.HeaderType_PAC_DECIDE_TRANSACTION ||
+			common.HeaderType(chdr.Type) == common.HeaderType_PAC_ABORT_TRANSACTION {
+			//TODO: decide, what should we need to save in history?
+			//it seems that we should not save PrepareTx payload in blockchain
+
+			//Extract RWSet from PAC-transaction
+			logger.Debugf("Writing RWset-keys to history for PAC transaction [%s]", common.HeaderType(chdr.Type).String())
+			respPayload, err := protoutil.GetPACActionFromEnvelope(envBytes)
+			if err != nil {
+				return err
+			}
+			txRWSet := &rwsetutil.TxRwSet{}
+			if err = txRWSet.FromProtoBytes(respPayload.Results); err != nil {
+				return err
+			}
+			// add a history record for each write
+			for _, nsRWSet := range txRWSet.NsRwSets {
+				ns := nsRWSet.NameSpace
+
+				for _, kvWrite := range nsRWSet.KvRwSet.Writes {
+					dataKey := constructDataKey(ns, kvWrite.Key, blockNo, tranNo)
+					// No value is required, write an empty byte array (emptyValue) since Put() of nil is not allowed
+					dbBatch.Put(dataKey, emptyValue)
+				}
+			}
+			logger.Debugf("Writing to history finished successful!")
 		} else {
 			logger.Debugf("Skipping transaction [%d] since it is not an endorsement transaction\n", tranNo)
 		}

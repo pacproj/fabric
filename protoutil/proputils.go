@@ -228,6 +228,36 @@ func GetActionFromEnvelopeMsg(env *common.Envelope) (*peer.ChaincodeAction, erro
 	return respPayload, err
 }
 
+//GetPACActionFromEnvelope do the same as GetActionFromEnvelope,
+//but only for PAC-type transactions (PrepareTx, DecideTx, AbortTx)
+func GetPACActionFromEnvelope(envBytes []byte) (*peer.ChaincodeAction, error) {
+	env, err := GetEnvelopeFromBlock(envBytes)
+	if err != nil {
+		return nil, err
+	}
+	payl, err := UnmarshalPayload(env.Payload)
+	if err != nil {
+		return nil, err
+	}
+	ptenv, pactxpayload, err := GetPACTxEnvelopeFromPayload(payl.Data)
+	if err != nil {
+		return nil, err
+	} else if ptenv == nil {
+		return nil, errors.New("PAC tx envelope is nil")
+	}
+	tx, err := UnmarshalTransaction(pactxpayload.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(tx.Actions) == 0 {
+		return nil, errors.New("at least one TransactionAction required")
+	}
+
+	_, respPayload, err := GetPayloads(tx.Actions[0])
+	return respPayload, err
+}
+
 // CreateProposalFromCISAndTxid returns a proposal given a serialized identity
 // and a ChaincodeInvocationSpec
 func CreateProposalFromCISAndTxid(txid string, typ common.HeaderType, channelID string, cis *peer.ChaincodeInvocationSpec, creator []byte) (*peer.Proposal, string, error) {
